@@ -1,0 +1,65 @@
+title: Scripting engine connected to an external destination
+id: trace-script-external-connection
+status: stable
+description: PowerShell/WSH/mshta talking directly to the internet is rare for benign users.
+author: TRACE team
+logsource: {category: network_connection}
+detection:
+  proc:
+    process.name: ['powershell.exe', 'pwsh.exe', 'wscript.exe', 'cscript.exe', 'mshta.exe', 'rundll32.exe', 'regsvr32.exe']
+  outbound:
+    network.direction: outbound
+  internal:
+    destination.ip|cidr: ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8']
+  condition: proc and outbound and not internal
+level: high
+tags: [attack.command_and_control, attack.t1071.001]
+---
+title: Rapid mass file rename to uniform extension (pre-aggregated count)
+id: trace-mass-rename-summary
+status: stable
+author: TRACE team
+logsource: {category: file_rename}
+detection:
+  selection:
+    labels_extra.files_renamed_60s|gte: 100
+  condition: selection
+level: critical
+tags: [attack.impact, attack.t1486]
+---
+title: File renamed to a known ransomware extension
+id: trace-ransom-extension
+status: stable
+author: TRACE team
+logsource: {category: file_rename}
+detection:
+  selection:
+    file.extension: ['locked', 'encrypted', 'crypt', 'enc', 'lockbit', 'ryk', 'conti']
+  condition: selection
+level: high
+tags: [attack.impact, attack.t1486]
+---
+title: Mass file rename burst on one host
+id: trace-mass-rename-burst
+status: stable
+author: TRACE team
+correlation:
+  type: event_count
+  rules: [trace-any-file-rename]
+  group-by: [host.name, process.name]
+  timespan: 1m
+  condition: {gte: 100}
+level: critical
+tags: [attack.impact, attack.t1486]
+---
+title: Any file rename
+id: trace-any-file-rename
+status: stable
+author: TRACE team
+logsource: {category: file_rename}
+detection:
+  selection:
+    event.action: file_rename
+  condition: selection
+level: informational
+tags: []

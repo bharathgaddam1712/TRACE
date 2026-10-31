@@ -1,0 +1,64 @@
+# Technique -> tactic mapping used for labelling (FR-3).
+# Pinned to MITRE ATT&CK Enterprise v20.0. Verify / refresh against the official STIX bundle:
+#   python scripts/fetch_attack.py --version 20.0
+#   tracekc attack-verify --stix attack/enterprise-attack-20.0.json [--write]
+# A technique can belong to several tactics; the detection rule's attack.<tactic> tag picks
+# the one that fits the context, otherwise the first tactic listed here is used.
+# Verified against enterprise-attack-20.0.json (sha256 81113ba9...ce534352) on 31 Oct 2026.
+# v19/v20 split Defense Evasion (TA0005) into Stealth (TA0005) and Defense Impairment (TA0112).
+attack_version: "20.0"
+
+tactics:            # shortname: [display name, kill-chain order, Lockheed Martin kill chain phase]
+  reconnaissance:       ["Reconnaissance", 1, "Reconnaissance"]
+  resource-development: ["Resource Development", 2, "Weaponization"]
+  initial-access:       ["Initial Access", 3, "Delivery"]
+  execution:            ["Execution", 4, "Exploitation"]
+  persistence:          ["Persistence", 5, "Installation"]
+  privilege-escalation: ["Privilege Escalation", 6, "Exploitation"]
+  defense-evasion:      ["Defense Evasion", 7, "Installation"]   # legacy (<= v18) rule tags only
+  stealth:              ["Stealth", 7, "Installation"]
+  defense-impairment:   ["Defense Impairment", 7, "Installation"]
+  credential-access:    ["Credential Access", 8, "Exploitation"]
+  discovery:            ["Discovery", 9, "Actions on Objectives"]
+  lateral-movement:     ["Lateral Movement", 10, "Actions on Objectives"]
+  collection:           ["Collection", 11, "Actions on Objectives"]
+  command-and-control:  ["Command and Control", 12, "Command and Control"]
+  exfiltration:         ["Exfiltration", 13, "Actions on Objectives"]
+  impact:               ["Impact", 14, "Actions on Objectives"]
+
+techniques:
+  T1003:     {name: "OS Credential Dumping", tactics: [credential-access]}
+  T1003.001: {name: "LSASS Memory", tactics: [credential-access]}
+  T1016:     {name: "System Network Configuration Discovery", tactics: [discovery]}
+  T1021:     {name: "Remote Services", tactics: [lateral-movement]}
+  T1021.001: {name: "Remote Desktop Protocol", tactics: [lateral-movement]}
+  T1021.002: {name: "SMB/Windows Admin Shares", tactics: [lateral-movement]}
+  T1021.004: {name: "SSH", tactics: [lateral-movement]}
+  T1021.006: {name: "Windows Remote Management", tactics: [lateral-movement]}
+  T1027:     {name: "Obfuscated Files or Information", tactics: [stealth]}
+  T1033:     {name: "System Owner/User Discovery", tactics: [discovery]}
+  T1041:     {name: "Exfiltration Over C2 Channel", tactics: [exfiltration]}
+  T1048:     {name: "Exfiltration Over Alternative Protocol", tactics: [exfiltration]}
+  T1053.005: {name: "Scheduled Task", tactics: [execution, persistence, privilege-escalation]}
+  T1059:     {name: "Command and Scripting Interpreter", tactics: [execution]}
+  T1059.001: {name: "PowerShell", tactics: [execution]}
+  T1059.003: {name: "Windows Command Shell", tactics: [execution]}
+  T1071:     {name: "Application Layer Protocol", tactics: [command-and-control]}
+  T1071.001: {name: "Web Protocols", tactics: [command-and-control]}
+  T1078:     {name: "Valid Accounts", tactics: [stealth, persistence, privilege-escalation, initial-access]}
+  T1082:     {name: "System Information Discovery", tactics: [discovery]}
+  T1087:     {name: "Account Discovery", tactics: [discovery]}
+  T1098:     {name: "Account Manipulation", tactics: [persistence, privilege-escalation]}
+  T1110:     {name: "Brute Force", tactics: [credential-access]}
+  T1110.001: {name: "Password Guessing", tactics: [credential-access]}
+  T1110.003: {name: "Password Spraying", tactics: [credential-access]}
+  T1136:     {name: "Create Account", tactics: [persistence]}
+  T1136.001: {name: "Local Account", tactics: [persistence]}
+  T1136.002: {name: "Domain Account", tactics: [persistence]}
+  T1204.002: {name: "Malicious File", tactics: [execution]}
+  T1486:     {name: "Data Encrypted for Impact", tactics: [impact]}
+  T1490:     {name: "Inhibit System Recovery", tactics: [impact]}
+  T1547.001: {name: "Registry Run Keys / Startup Folder", tactics: [persistence, privilege-escalation]}
+  T1560:     {name: "Archive Collected Data", tactics: [collection]}
+  T1567:     {name: "Exfiltration Over Web Service", tactics: [exfiltration]}
+  T1685.005: {name: "Clear Windows Event Logs", tactics: [defense-impairment]}   # was T1070.001 (revoked in v20)

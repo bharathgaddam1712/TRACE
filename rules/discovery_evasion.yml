@@ -1,0 +1,43 @@
+title: Account and identity discovery commands
+id: trace-account-discovery
+status: experimental
+author: TRACE team
+logsource: {category: process_creation}
+detection:
+  whoami:
+    process.name: whoami.exe
+  net:
+    process.name: ['net.exe', 'net1.exe']
+    process.command_line|contains: [' user', ' group', ' localgroup']
+  nltest:
+    process.name: nltest.exe
+  condition: whoami or net or nltest
+level: medium
+tags: [attack.discovery, attack.t1087]
+---
+title: Event log cleared
+id: trace-log-cleared
+status: experimental
+author: TRACE team
+logsource: {category: process_creation}
+detection:
+  wevtutil:
+    process.name: wevtutil.exe
+    process.command_line|contains: [' cl ', 'clear-log']
+  ps:
+    process.command_line|contains: 'Clear-EventLog'
+  condition: wevtutil or ps
+level: high
+tags: [attack.defense_impairment, attack.t1685.005]
+---
+title: Shadow copy deletion
+id: trace-shadow-delete
+status: experimental
+author: TRACE team
+logsource: {category: process_creation}
+detection:
+  selection:
+    process.command_line|contains|all: ['shadow', 'delete']
+  condition: selection
+level: critical
+tags: [attack.impact, attack.t1490]

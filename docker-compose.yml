@@ -1,0 +1,22 @@
+# 1) put logs in ./data/raw          2) docker compose run --rm pipeline
+# 3) docker compose up api           4) open http://localhost:8000
+services:
+  pipeline:
+    build: .
+    command: ["run", "--input", "/app/data/raw", "--out", "/app/out"]
+    volumes:
+      - ./data:/app/data:ro
+      - ./out:/app/out
+      - ./work:/app/work          # DuckDB spill directory: keep it on an SSD
+    profiles: ["run"]
+  api:
+    build: .
+    command: ["serve", "--out", "/app/out", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["8000:8000"]
+    volumes:
+      - ./out:/app/out:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3

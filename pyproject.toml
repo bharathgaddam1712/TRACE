@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tracekc"
+version = "0.1.0"
+description = "TRACE: kill chain and attack path reconstruction over large security log sets"
+requires-python = ">=3.10"
+dependencies = ["duckdb==2.0.0", "PyYAML==6.0.3", "fastapi==0.162.0", "starlette==1.10.0",
+                "pydantic==2.14.2", "uvicorn==0.54.0", "psutil==7.2.2"]
+
+[project.optional-dependencies]
+dev = ["pytest==9.2.0", "httpx==0.28.1"]
+
+[project.scripts]
+tracekc = "tracekc.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

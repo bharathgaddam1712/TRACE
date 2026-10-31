@@ -1,0 +1,9 @@
+# Audited suppressions (FP gate). Every entry needs a reason; suppressed signals are written to
+# out/suppressed.json, never silently dropped. Match keys are ANDed; omit a key to match any value.
+# Only add an entry after verifying the behaviour is benign in the data.
+#
+# Example:
+# - rule_id: "trace-lateral-first-seen"
+#   user: "svc_backup"
+#   reason: "Backup service account logs on to every server nightly (verified 01 Nov)"
+suppressions: []

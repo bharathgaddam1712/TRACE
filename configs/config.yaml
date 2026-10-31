@@ -1,0 +1,76 @@
+# TRACE runtime configuration. Any key can be overridden on the CLI:
+#   tracekc run --input data/raw --out out --set correlation.session_gap_s=1800
+# Relative paths are resolved against the project root (the parent of configs/).
+
+engine:
+  memory_limit: "5GB"        # DuckDB buffer cap; spills to temp_directory beyond this
+  threads: 0                 # 0 = all cores
+  temp_directory: "work/duckdb_tmp"
+
+ingest:
+  # File patterns searched recursively under --input. Gzip is detected automatically.
+  patterns: ["*.json", "*.ndjson", "*.jsonl", "*.json.gz", "*.ndjson.gz", "*.jsonl.gz"]
+  maximum_object_size: 16777216
+  dedupe_events: true        # drop duplicate event ids (duplicate ingestion)
+
+# Address space treated as "inside the organisation". Everything else is external.
+internal_networks:
+  - "10.0.0.0/8"
+  - "172.16.0.0/12"
+  - "192.168.0.0/16"
+  - "127.0.0.0/8"
+  - "169.254.0.0/16"
+
+detection:
+  rules_dir: "rules"
+  use_vendor_alerts: true    # turn EDR kind=alert rows into detections (deduplicated against our rules)
+  max_event_ids: 1000        # evidence event ids kept per detection
+  lateral:
+    enabled: true
+    max_pair_count: 1        # user+src_host+dst_host seen at most this often = first-seen lateral logon
+    logon_types: ["remoteinteractive", "network", "10", "3"]
+    pivot_lookback_s: 86400  # require medium+ detection on the source host or account within this window
+  volume:
+    enabled: true
+    technique: "T1048"
+    min_bytes: 100000000     # never flag less than 100 MB per host->external destination
+    mad_k: 8                 # and require > median + k * MAD of all host->external totals
+  rarity:
+    enabled: true
+    max_fleet_count: 2       # parent->child pair seen at most this often fleet-wide
+    min_process_events: 1000 # need this much baseline before rarity means anything
+
+correlation:
+  dedupe_window_s: 300       # same technique+entities within this gap collapse into one signal
+  session_gap_s: 3600        # a pivot (user/host/IP) chain breaks after this much silence
+  hub_max_users: 5           # host or IP sessions touching more distinct users are not used to link
+  hub_max_hosts: 10          # user sessions touching more distinct hosts are not used to link
+  # Not hub-guarded (specific by construction): same host+process id, and lateral-logon ASOF edges.
+  link_min_severity: 0       # signals below this severity never create links
+  recurrence_bucket_s: 3600  # an identical alert fingerprint seen in >= recurrence_min_buckets separate
+  recurrence_min_buckets: 3  # buckets is baseline (scheduled job / alert noise): kept as finding, never links
+  max_incident_signals: 200  # over-merge guard: larger components are split per user
+  max_incident_hosts: 12
+  excluded_users: ["system", "local service", "network service", "anonymous logon", "-", ""]
+
+promotion:
+  min_tactics: 2             # distinct ATT&CK tactics (from signals >= core_min_severity) to become an incident
+  core_min_severity: 50
+  critical_severity: 100
+  # true: a lone critical signal (e.g. one ransomware alert) is an incident by itself.
+  # false (default): it stays an isolated finding unless linked to another tactic. The organiser
+  # sample sprinkles ~1 critical alert per 90 events with no chain; promoting each would flood the
+  # incident list and the false-incident rate. Flip if the ground truth counts single-step attacks.
+  promote_single_critical: false
+
+lookahead:
+  max_hops: 2
+  max_results: 15
+  admin_ports: [22, 135, 139, 445, 3389, 5985, 5986]
+  criticality:               # first matching regex wins; higher = listed first
+    - {pattern: "DC", weight: 3}
+    - {pattern: "^SRV", weight: 2}
+    - {pattern: ".*", weight: 1}
+
+output:
+  evidence_events_in_json: 20

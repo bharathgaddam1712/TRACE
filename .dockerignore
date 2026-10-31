@@ -1,0 +1,9 @@
+.venv
+out
+work
+data/raw
+data/tiers
+data/planted
+attack/*.json
+**/__pycache__
+*.zip

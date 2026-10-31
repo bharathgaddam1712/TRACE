@@ -1,0 +1,92 @@
+title: Office application spawned a scripting engine
+id: trace-office-spawns-script
+status: stable
+author: TRACE team
+logsource: {category: process_creation}
+detection:
+  parent:
+    process.parent.name: ['winword.exe', 'excel.exe', 'powerpnt.exe', 'outlook.exe', 'msaccess.exe', 'mspub.exe', 'onenote.exe']
+  child:
+    process.name: ['powershell.exe', 'pwsh.exe', 'cmd.exe', 'wscript.exe', 'cscript.exe', 'mshta.exe', 'rundll32.exe', 'regsvr32.exe']
+  condition: parent and child
+level: high
+tags: [attack.execution, attack.t1059.001, attack.t1204.002]
+---
+title: Encoded or hidden PowerShell command line
+id: trace-encoded-powershell
+status: stable
+author: TRACE team
+logsource: {category: process_creation}
+detection:
+  ps:
+    process.name: ['powershell.exe', 'pwsh.exe']
+  flags:
+    process.command_line|contains: [' -enc', ' -encodedcommand', ' -e ', '-w hidden', '-windowstyle hidden']
+  condition: ps and flags
+level: high
+tags: [attack.execution, attack.t1059.001]
+---
+title: Autorun key created by a scripting engine
+id: trace-runkey-by-script
+status: stable
+author: TRACE team
+logsource: {category: registry_set}
+detection:
+  key:
+    registry.path|contains: ['\CurrentVersion\Run', '\CurrentVersion\RunOnce', '\Winlogon\Userinit', '\Winlogon\Shell']
+  writer:
+    process.name: ['powershell.exe', 'pwsh.exe', 'cmd.exe', 'wscript.exe', 'cscript.exe', 'mshta.exe', 'rundll32.exe', 'regsvr32.exe', 'reg.exe']
+  condition: key and writer
+level: high
+tags: [attack.persistence, attack.t1547.001]
+---
+title: Scheduled task created from command line
+id: trace-schtasks-create
+status: experimental
+author: TRACE team
+logsource: {category: process_creation}
+detection:
+  selection:
+    process.name: schtasks.exe
+    process.command_line|contains: '/create'
+  condition: selection
+level: medium
+tags: [attack.persistence, attack.t1053.005]
+---
+title: Local or domain account created
+id: trace-account-created
+status: experimental
+author: TRACE team
+logsource: {product: windows}
+detection:
+  selection:
+    winlog.event_id: 4720
+  condition: selection
+level: high
+tags: [attack.persistence, attack.t1136]
+---
+title: Member added to a privileged group
+id: trace-admin-group-add
+status: experimental
+author: TRACE team
+logsource: {product: windows}
+detection:
+  selection:
+    winlog.event_id: [4728, 4732, 4756]
+  condition: selection
+level: high
+tags: [attack.persistence, attack.t1098]
+---
+title: Net user / group add from command line
+id: trace-net-user-add
+status: experimental
+author: TRACE team
+logsource: {category: process_creation}
+detection:
+  name:
+    process.name: ['net.exe', 'net1.exe']
+  add:
+    process.command_line|contains|all: ['/add']
+  condition: name and add
+level: high
+tags: [attack.persistence, attack.t1136.001]
