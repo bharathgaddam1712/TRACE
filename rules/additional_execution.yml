@@ -1,0 +1,51 @@
+title: Certutil remote file retrieval
+id: trace-certutil-download
+status: experimental
+author: TRACE team
+logsource: {category: process_creation}
+detection:
+  tool: {process.name: certutil.exe}
+  download:
+    process.command_line|contains: ['-urlcache', '-verifyctl']
+  remote:
+    process.command_line|contains: ['http://', 'https://']
+  condition: tool and download and remote
+level: medium
+tags: [attack.command_and_control, attack.t1105]
+---
+title: MSHTA executes remote content
+id: trace-mshta-remote
+status: experimental
+author: TRACE team
+logsource: {category: process_creation}
+detection:
+  tool: {process.name: mshta.exe}
+  remote:
+    process.command_line|contains: ['http://', 'https://', 'javascript:', 'vbscript:']
+  condition: tool and remote
+level: high
+tags: [attack.stealth, attack.t1218.005]
+---
+title: WMI remote process creation
+id: trace-wmi-remote-create
+status: experimental
+author: TRACE team
+logsource: {category: process_creation}
+detection:
+  tool: {process.name: wmic.exe}
+  remote: {process.command_line|contains: '/node:'}
+  create: {process.command_line|contains|all: ['process', 'create']}
+  condition: tool and remote and create
+level: high
+tags: [attack.execution, attack.t1047]
+---
+title: New Windows service installed
+id: trace-service-install
+status: experimental
+author: TRACE team
+logsource: {product: windows}
+detection:
+  selection: {winlog.event_id: [4697, 7045]}
+  condition: selection
+level: medium
+tags: [attack.persistence, attack.t1543.003]

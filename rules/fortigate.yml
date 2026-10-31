@@ -1,0 +1,64 @@
+title: FortiGate public-facing application exploit signature
+id: trace-fortigate-public-exploit
+status: experimental
+author: TRACE team
+description: A vendor exploit signature on inbound traffic indicates an attempt, not successful compromise.
+logsource: {}
+detection:
+  source: {event.dataset: fortigate.ips, network.direction: inbound}
+  signature:
+    rule.name|contains: ['SQL.Injection', 'Log4j', 'WebLogic', 'Confluence', 'Path.Traversal', 'Directory.Traversal', 'Remote.Code.Execution', 'HTTP.Server.Authorization.Buffer.Overflow']
+  condition: source and signature
+level: high
+tags: [attack.initial_access, attack.t1190]
+---
+title: FortiGate remote service exploit signature on internal traffic
+id: trace-fortigate-lateral-exploit
+status: experimental
+author: TRACE team
+logsource: {}
+detection:
+  source: {event.dataset: fortigate.ips, network.direction: internal}
+  signature:
+    rule.name|contains: ['ZeroLogon', 'SMB.Server', 'Remote.Code.Execution', 'Buffer.Overflow']
+  condition: source and signature
+level: high
+tags: [attack.lateral_movement, attack.t1210]
+---
+title: FortiGate brute force signature
+id: trace-fortigate-bruteforce-signature
+status: experimental
+author: TRACE team
+logsource: {}
+detection:
+  source: {event.dataset: fortigate.ips}
+  signature: {rule.name|contains: ['Brute.Force', 'Password.Spray']}
+  condition: source and signature
+level: medium
+tags: [attack.credential_access, attack.t1110]
+---
+title: FortiGate Cobalt Strike or botnet command signature
+id: trace-fortigate-c2-signature
+status: experimental
+author: TRACE team
+logsource: {}
+detection:
+  source: {event.dataset: fortigate.ips}
+  signature: {rule.name|contains: ['Cobalt.Strike.Beacon', 'Botnet.Command', 'Command.And.Control', 'DNS.Tunneling']}
+  condition: source and signature
+level: high
+tags: [attack.command_and_control, attack.t1071]
+---
+title: FortiGate malicious file detection
+id: trace-fortigate-malicious-file
+status: experimental
+author: TRACE team
+description: Vendor malware detection is evidence of a malicious file attempt. It does not prove execution.
+logsource: {}
+detection:
+  source: {event.dataset: fortigate.virus}
+  signature: {message|contains: ['malware', 'trojan', 'ransomware', 'infected', 'virus']}
+  test_file: {message|contains: ['eicar', 'test file']}
+  condition: source and signature and not test_file
+level: medium
+tags: [attack.initial_access, attack.t1105]
