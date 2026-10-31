@@ -4,7 +4,7 @@ BIN = $(VENV)/bin
 INPUT ?= data/raw
 OUT ?= out
 
-.PHONY: setup test demo run serve eval bench attack clean
+.PHONY: setup test demo run serve web eval bench attack clean
 
 setup:            ## create venv and install (Python >= 3.10)
 	$(PY) -m venv $(VENV)
@@ -27,6 +27,9 @@ run:              ## full pipeline: make run INPUT=data/raw OUT=out
 
 serve:            ## API + web page on :8000
 	$(BIN)/tracekc serve --out $(OUT)
+
+web:              ## Next.js console on :3000 (start `make serve` first)
+	cd frontend && npm ci && npm run build && npm run start
 
 eval:             ## score: make eval GT=path/to/ground_truth.json
 	$(BIN)/tracekc eval --out $(OUT) --gt $(GT) --save $(OUT)/eval.json

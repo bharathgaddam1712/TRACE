@@ -42,6 +42,24 @@ cp .env.example .env
 .venv/bin/tracekc serve --out out/sample-loop/planted
 ```
 
+## Web console (Next.js)
+
+A web investigation console lives in `frontend/` (Node.js 20+). It reads the results of a pipeline run
+through the API, so start the API first, then the console:
+
+```bash
+# 1. Results: the data ships in the repo (data/sample/edr_events.json, 10,000 EDR events)
+.venv/bin/tracekc run --input data/sample --out out/web       # or: scripts/validate_loop.py -> out/sample-loop/planted
+# 2. API on :8000
+.venv/bin/tracekc serve --out out/web
+# 3. Console on :3000 (second terminal)
+make web
+```
+
+Windows (PowerShell): the same steps with `.\.venv\Scripts\python.exe -m tracekc run --input data/sample --out out/web`,
+`.\.venv\Scripts\python.exe -m tracekc serve --out out/web`, then `cd frontend; npm ci; npm run build; npm run start`.
+To analyse other logs, point `--input` at a folder of your own files. See [frontend/README.md](frontend/README.md).
+
 ## Where to put the Sarvam API key
 
 Create **`.env` in this repository root**, beside `pyproject.toml`. Setup creates a blank template automatically. Edit:
