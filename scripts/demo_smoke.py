@@ -17,11 +17,15 @@ def main():
     with TestClient(app,headers=headers) as client:
         def get(path):
             response=client.get(path);response.raise_for_status();return response
-        rows=get('/incidents?limit=1000').json()
+        listed=get('/incidents?limit=1000').json()
+        rows=json.loads((output/'index.json').read_text(encoding='utf-8'))
         assert rows,'No demo incidents'
+        assert listed,'API did not return incidents'
         forecasts=[]
         for row in rows:
-            inc=get(f"/incidents/{row['id']}").json()
+            # Validate every stored graph without repeatedly serializing all its
+            # evidence/relationships through HTTP; API behavior is checked below.
+            inc=json.loads((output/'incidents'/f"{row['id']}.json").read_text(encoding='utf-8'))
             ids={n['id'] for n in inc['graph']['nodes']}
             assert all(e['source'] in ids and e['target'] in ids for e in inc['graph']['edges'])
             if inc.get('forecast',{}).get('sequences'):
