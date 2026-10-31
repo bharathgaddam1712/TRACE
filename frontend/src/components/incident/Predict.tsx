@@ -13,8 +13,19 @@ export function Lookahead({ incident }: { incident: Incident }) {
   return (
     <Card>
       <CardHeader icon={<Route className="size-4" />} title="Where the attacker could go next"
-        subtitle={`Assets reachable from compromised accounts and hosts, using access actually observed before the incident ended · ${la.total_candidates ?? rows.length} candidates`} />
-      {rows.length === 0 ? <Empty title="No reachable assets found">{la.status === 'evidenced' ? 'Nothing beyond the incident was reachable with observed access.' : `Lookahead status: ${la.status}`}</Empty> : (
+        subtitle={`Possible next assets from incident accounts and hosts, based on access observed before the incident ended · ${la.total_candidates ?? rows.length} candidates`} />
+      {rows.length === 0 ? (
+        <div className="px-5 pb-5">
+          <Empty title="Insufficient access evidence for a next asset">
+            No additional host outside this incident met the access and time constraints.
+            The separate historical technique model answers a different question: which ATT&amp;CK technique might follow.
+          </Empty>
+          <ul className="space-y-2 text-xs text-fg-muted">
+            {(la.assumptions ?? []).filter((reason) => reason.startsWith('No ')).map((reason) => <li key={reason}>{reason}</li>)}
+          </ul>
+          <p className="mt-3 text-xs text-fg-subtle">This panel needs successful account access, privileged logons, or observed administrative network paths tied to this incident. External IP contacts alone do not establish access to another internal asset.</p>
+        </div>
+      ) : (
         <div className="px-5 pb-5">
           <div className="grid gap-2.5 sm:grid-cols-2">
             {rows.map((r, i) => (
