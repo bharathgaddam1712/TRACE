@@ -36,8 +36,9 @@ the full-file demo. The source stays outside the repository.
 
 Open http://127.0.0.1:8001. The script runs all seven
 stages, performs a causal network interaction experiment, exports inferred incident
-histories, benchmarks technique models, then reuses ingestion caches to attach
-sequence hypotheses only to incidents after the model's training cutoff.
+histories, benchmarks technique models, then attaches
+sequence hypotheses only to incidents after the model's training cutoff. Model
+attachment updates saved incidents directly; it does not repeat ingestion or detection.
 
 ## What to demonstrate
 

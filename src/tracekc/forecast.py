@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import math
+import os
 from pathlib import Path
 
 
@@ -263,6 +264,57 @@ def export_history(out_dir:Path):
         rows.append({'id':inc['fingerprint'],'started_at':inc['first_seen'],'ended_at':inc['last_seen'],'techniques':sequence})
     return {'label_source':'trace_predictions_unreviewed','incidents':rows,
             'warning':'Review these inferred incidents and labels before using them as independent evaluation ground truth.'}
+
+
+def attach_model(out_dir:Path,model_path:Path):
+    lock=out_dir/'.pipeline.lock'
+    try:
+        descriptor=os.open(lock,os.O_CREAT|os.O_EXCL|os.O_WRONLY)
+    except FileExistsError:
+        raise ValueError('Wait for the pipeline writer to finish before attaching forecasts') from None
+    try:
+        with os.fdopen(descriptor,'w') as stream:
+            stream.write(str(os.getpid()))
+        return _attach_model(out_dir,model_path)
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _attach_model(out_dir:Path,model_path:Path):
+    """Attach bounded forecasts to published incidents without rerunning detection.
+
+    Observation timestamps are recoverable from materialized timeline endpoints;
+    this also upgrades older evidence graphs for the temporal path query. No raw
+    records are reparsed and no incident membership or ATT&CK labels are changed.
+    """
+    from tracekc.materialize import write_json
+    from tracekc.graph_algorithms import GraphIndex
+    model=json.loads(model_path.read_text(encoding='utf-8-sig'))
+    index=json.loads((out_dir/'index.json').read_text(encoding='utf-8-sig'))
+    estimated=0
+    for row in index:
+        path=out_dir/'incidents'/f"{row['id']}.json"
+        incident=json.loads(path.read_text(encoding='utf-8-sig'))
+        prefix=[s['technique'] for s in incident['timeline'] if s.get('technique')]
+        incident['forecast']=predict(model,prefix[-1] if prefix else None,incident['first_seen'],prefix)
+        estimated+=incident['forecast']['status']=='estimated'
+        steps={s['step']:s for s in incident['timeline']}
+        for edge in incident['graph']['edges']:
+            supporting=[steps[n] for n in edge.get('steps',[]) if n in steps]
+            if not supporting or edge.get('evidence_kind')=='hypothesis':
+                continue
+            if edge['kind']=='correlates_with':
+                times=[max(int(timestamp(s['ts']).timestamp()*1000) for s in supporting)]
+            else:
+                times=[int(timestamp(value).timestamp()*1000) for s in supporting for value in (s['ts'],s.get('ts_last') or s['ts'])]
+            edge['observation_times_ms']=sorted(set(times))
+        GraphIndex(incident['graph'])
+        write_json(path,incident)
+    write_json(out_dir/'index.json',index)
+    result={'incidents':len(index),'estimated':estimated,'model':model['selected_model'],
+            'label_source':model.get('label_source','unspecified'),'raw_reprocessing':False}
+    write_json(out_dir/'forecast-attachment.json',result)
+    return result
 
 
 def compare_sarvam(test_rows,service,catalog,limit=10):

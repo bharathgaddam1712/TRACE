@@ -19,9 +19,8 @@ try {
     Invoke-DemoPython -m tracekc export-history --out $Output --save "$Output/histories.json"
     Invoke-DemoPython -m tracekc forecast-benchmark --input "$Output/histories.json" --out "$Output/forecast-comparison.json" --model-out "$Output/forecast-model.json"
     $DemoModel = (Resolve-Path -LiteralPath "$Output/forecast-model.json").Path
-    # Second run reuses normalized chunks. The model refuses incidents before its
-    # training cutoff. Its labels remain explicitly unreviewed in the UI.
-    Invoke-DemoPython -m tracekc run --input $DemoInput --out $Output --keep-work --set engine.memory_limit=3GB --set engine.threads=4 --set engine.profile_queries=true --set "forecast.model_path=$DemoModel"
+    # Attach to saved evidence without repeating the expensive detection pass.
+    Invoke-DemoPython -m tracekc attach-forecast --out $Output --model $DemoModel
     Write-Output "Demo ready. Start UI: $DemoPython -m tracekc serve --out $Output --port 8001"
     Write-Output 'Forecasts fitted to TRACE labels are exploratory; inspect evaluation warnings.'
 } finally { Pop-Location }

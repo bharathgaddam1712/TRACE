@@ -164,6 +164,14 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(contracts(),indent=2))
         return 0
     schemas.set_defaults(fn=schema_command)
+    attach=sub.add_parser('attach-forecast',help='Attach a fitted model without repeating ingestion/detection')
+    attach.add_argument('--out',required=True)
+    attach.add_argument('--model',required=True)
+    def attach_command(args):
+        from tracekc.forecast import attach_model
+        print(json.dumps(attach_model(Path(args.out),Path(args.model)),indent=2))
+        return 0
+    attach.set_defaults(fn=attach_command)
     temporal = sub.add_parser('temporal-benchmark', help='Causal network interaction ranking; not attack accuracy')
     temporal.add_argument('--events', required=True, help='Normalized work/events.parquet from run --keep-work')
     temporal.add_argument('--out', required=True)

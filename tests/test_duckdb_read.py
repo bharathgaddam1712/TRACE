@@ -48,3 +48,18 @@ def test_parser_contracts_include_ad_schema_and_noise_policies():
     assert set(data['formats'])=={'ecs','fortigate','csv','syslog'}
     assert 'winlog' in data['ecs_projection'] and data['normalized_required']==['ts_ms','host']
     assert 'recurrent_alerts' in data['noise_policy']
+
+
+def test_atomic_publication_retries_transient_windows_watchers(tmp_path,monkeypatch):
+    import tracekc.materialize as materialize
+    original=materialize.os.replace;calls=[]
+    def held_handle(source,target):
+        calls.append(1)
+        if len(calls)<3:
+            raise PermissionError('temporary watcher handle')
+        original(source,target)
+    monkeypatch.setattr(materialize.os,'replace',held_handle)
+    monkeypatch.setattr(materialize.time,'sleep',lambda duration:None)
+    target=tmp_path/'incident.json'
+    materialize.write_json(target,{'published':True})
+    assert len(calls)==3 and json.loads(target.read_text())['published']

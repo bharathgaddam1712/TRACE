@@ -13,6 +13,7 @@ import json
 import re
 import hashlib
 import os
+import time
 from collections import defaultdict
 from tracekc.graph_algorithms import link_decision
 from datetime import datetime, timezone
@@ -32,7 +33,16 @@ MAX_FINDINGS_JSON = 2000
 def write_json(path: Path, value) -> None:
     temporary = path.with_suffix(path.suffix + '.tmp')
     temporary.write_text(json.dumps(value, indent=1, default=str), encoding='utf-8')
-    os.replace(temporary, path)
+    # Windows file watchers/OneDrive may briefly hold a destination handle.
+    # Retain atomic publication and retry only transient permission conflicts.
+    for attempt in range(7):
+        try:
+            os.replace(temporary, path)
+            break
+        except PermissionError:
+            if attempt == 6:
+                raise
+            time.sleep(.025 * 2**attempt)
 
 
 def iso(ms: int | None) -> str | None:
