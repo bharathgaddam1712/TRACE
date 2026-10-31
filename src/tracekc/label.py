@@ -10,13 +10,17 @@ from pathlib import Path
 import yaml
 
 from tracekc.engine import one, run
+from tracekc.sigma import lit
 
 
 def load_mapping(path: Path) -> dict:
-    return yaml.safe_load(path.read_text())
+    return yaml.safe_load(path.read_text(encoding="utf-8-sig"))
 
 
 def label(con, mapping: dict) -> dict:
+    replacements=mapping.get('revocations',{})
+    expression='CASE tid '+ ' '.join(f'WHEN {lit(old)} THEN {lit(new)}' for old,new in replacements.items())+' ELSE tid END' if replacements else 'tid'
+    run(con,f'CREATE OR REPLACE MACRO canonical_technique(tid) AS {expression}')
     run(con, "CREATE OR REPLACE TABLE tactic_map (tactic VARCHAR, display VARCHAR, ord INTEGER, lockheed VARCHAR)")
     for short, (display, order, lockheed) in mapping["tactics"].items():
         run(con, "INSERT INTO tactic_map VALUES (?, ?, ?, ?)", [short, display, int(order), lockheed])
@@ -28,7 +32,11 @@ def label(con, mapping: dict) -> dict:
     # tag selects among several valid tactics; a tag that is not valid for the technique is ignored.
     run(con, f"""
         CREATE OR REPLACE TABLE labeled AS
-        WITH j AS (
+        WITH normalized AS (
+          SELECT d.* EXCLUDE (technique,techniques), d.technique AS source_technique,
+                 canonical_technique(d.technique) AS technique,
+                 list_transform(d.techniques,lambda t:canonical_technique(t)) AS techniques FROM detections d),
+        j AS (
           SELECT d.*,
                  coalesce(t.name, tp.name) AS technique_name,
                  coalesce(t.tactics, tp.tactics) AS valid_tactics,
@@ -36,7 +44,7 @@ def label(con, mapping: dict) -> dict:
                       WHEN tp.technique IS NOT NULL THEN 'attack-mapping-parent'
                       WHEN d.technique IS NOT NULL AND d.tactic_hint IS NOT NULL THEN 'rule-tag'
                       ELSE 'unmapped' END AS mapping_source
-          FROM detections d
+          FROM normalized d
           LEFT JOIN tech_map t ON d.technique = t.technique
           LEFT JOIN tech_map tp ON t.technique IS NULL AND split_part(d.technique, '.', 1) = tp.technique),
         k AS (
@@ -47,10 +55,19 @@ def label(con, mapping: dict) -> dict:
                       ELSE valid_tactics[1] END AS tactic
           FROM j)
         SELECT k.*, m.display AS tactic_name, m.ord AS tactic_order, m.display AS kill_chain_stage,
-               m.lockheed AS lockheed_phase, '{version}' AS mapping_version
+               m.lockheed AS lockheed_phase, '{version}' AS mapping_version,
+               CASE WHEN source_technique<>technique THEN 'Revoked technique ' || source_technique || ' replaced by ' || technique || ' using MITRE STIX. '
+                    ELSE '' END ||
+               CASE WHEN mapping_source='unmapped' THEN 'No supported technique/tactic evidence; left unmapped'
+                    WHEN mapping_source='rule-tag' THEN 'Rule supplied a technique/tactic not verified by the local catalog'
+                    WHEN mapping_source='attack-mapping-parent' THEN 'Sub-technique absent; parent technique supplies valid tactics'
+                    WHEN list_contains(valid_tactics,tactic_hint) THEN 'Detection rule technique and tactic agree with the ATT&CK catalog'
+                    ELSE 'Technique matches catalog; first valid catalog tactic selected because rule hint is absent or invalid'
+               END || '; detection rule: ' || coalesce(rule_id,'unknown') AS mapping_reason
         FROM k LEFT JOIN tactic_map m ON k.tactic = m.tactic""")
     unmapped = one(con, "SELECT count(*) FROM labeled WHERE technique IS NOT NULL AND tactic_name IS NULL")[0]
     return {"attack_version": version, "unmapped_techniques": unmapped,
+            'mapping_sources': dict(run(con, 'SELECT mapping_source, count(*) FROM labeled GROUP BY 1')),
             "by_tactic": dict(run(con, "SELECT coalesce(tactic_name, '(none)'), count(*) FROM labeled GROUP BY 1"))}
 
 
@@ -74,7 +91,7 @@ def stix_revocations(bundle: dict) -> dict[str, str]:
 
 
 def stix_techniques(stix_path: Path) -> dict[str, dict]:
-    bundle = json.loads(stix_path.read_text())
+    bundle = json.loads(stix_path.read_text(encoding="utf-8-sig"))
     out = {"_revoked": stix_revocations(bundle)}
     for obj in bundle.get("objects", []):
         if obj.get("type") != "attack-pattern" or obj.get("revoked") or obj.get("x_mitre_deprecated"):
@@ -94,6 +111,11 @@ def verify_mapping(mapping_path: Path, stix_path: Path, write: bool = False) -> 
     mapping = load_mapping(mapping_path)
     stix = stix_techniques(stix_path)
     problems = []
+    problems.extend(f'{old}: revocation does not match STIX' for old,new in mapping.get('revocations',{}).items()
+                    if stix['_revoked'].get(old)!=new)
+    if mapping.get('catalog_complete'):
+        problems.extend(f'{tid}: active STIX technique missing from complete catalog'
+                        for tid in sorted(stix) if not tid.startswith('_') and tid not in mapping['techniques'])
     for tid, t in mapping["techniques"].items():
         s = stix.get(tid.upper())
         if s is None:

@@ -9,7 +9,12 @@ engine:
 
 ingest:
   # File patterns searched recursively under --input. Gzip is detected automatically.
-  patterns: ["*.json", "*.ndjson", "*.jsonl", "*.json.gz", "*.ndjson.gz", "*.jsonl.gz"]
+  patterns: ["*.json", "*.ndjson", "*.jsonl", "*.log", "*.csv", "*.syslog", "*.json.gz", "*.ndjson.gz", "*.jsonl.gz", "*.log.gz", "*.csv.gz"]
+  format: auto               # auto, ecs, csv, syslog (RFC5424 or ISO-timestamp syslog)
+  ignore_errors: false       # fail on malformed JSON instead of silently losing evidence
+  append_only: false         # opt in only for append-only ECS/FortiGate streams; checkpoints complete lines
+  chunk_bytes: 268435456     # closed large ECS/FortiGate files: cache 256 MiB chunks and resume failed reads
+  incremental: true          # cache unchanged files; changed/appended files are reprocessed
   maximum_object_size: 16777216
   dedupe_events: true        # drop duplicate event ids (duplicate ingestion)
 
@@ -22,6 +27,7 @@ internal_networks:
   - "169.254.0.0/16"
 
 detection:
+  rules_sql_batch_size: 16   # bounded planner cost; partitioned Parquet scans trade small reads for lower peak memory
   rules_dir: "rules"
   use_vendor_alerts: true    # turn EDR kind=alert rows into detections (deduplicated against our rules)
   max_event_ids: 1000        # evidence event ids kept per detection
@@ -41,6 +47,7 @@ detection:
     min_process_events: 1000 # need this much baseline before rarity means anything
 
 correlation:
+  similarity_threshold: 0.3 # weighted Jaccard for weak entity pivots; specific process/logon evidence is retained
   dedupe_window_s: 300       # same technique+entities within this gap collapse into one signal
   session_gap_s: 3600        # a pivot (user/host/IP) chain breaks after this much silence
   hub_max_users: 5           # host or IP sessions touching more distinct users are not used to link
@@ -64,6 +71,8 @@ promotion:
   promote_single_critical: false
 
 lookahead:
+  evidence_max_age_s: 604800  # access evidence expires after 7 days
+  session_max_age_s: 28800   # sessions are hypotheses and expire after 8 hours
   max_hops: 2
   max_results: 15
   admin_ports: [22, 135, 139, 445, 3389, 5985, 5986]
@@ -74,3 +83,18 @@ lookahead:
 
 output:
   evidence_events_in_json: 20
+
+forecast:
+  model_path: null            # optional JSON from tracekc train-forecast; no invented training data
+
+relationships:
+  threshold: 0.6
+  technique_overlap: 0.3
+  time_window_s: 86400
+  max_candidates_per_incident: 200
+  hub_limit: 100
+
+graph:
+  default_depth: 2
+  max_depth: 6
+  neighborhood_limit: 500

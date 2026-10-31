@@ -1,0 +1,83 @@
+title: Potential Homoglyph Attack Using Lookalike Characters in Filename
+id: 4f1707b1-b50b-45b4-b5a2-3978b5a5d0d6
+status: test
+description: 'Detects the presence of unicode characters which are homoglyphs, or
+  identical in appearance, to ASCII letter characters.
+
+  This is used as an obfuscation and masquerading techniques. Only "perfect" homoglyphs
+  are included; these are characters that
+
+  are indistinguishable from ASCII characters and thus may make excellent candidates
+  for homoglyph attack characters.
+
+  '
+references:
+- https://redcanary.com/threat-detection-report/threats/socgholish/#threat-socgholish
+- http://www.irongeek.com/homoglyph-attack-generator.php
+author: Micah Babinski, @micahbabinski
+date: 2023-05-08
+tags:
+- attack.stealth
+- attack.t1036
+- attack.t1036.003
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection_upper:
+    TargetFilename|contains:
+    - А
+    - В
+    - Е
+    - К
+    - М
+    - Н
+    - О
+    - Р
+    - С
+    - Т
+    - Х
+    - Ѕ
+    - І
+    - Ј
+    - Ү
+    - Ӏ
+    - Ԍ
+    - Ԛ
+    - Ԝ
+    - Α
+    - Β
+    - Ε
+    - Ζ
+    - Η
+    - Ι
+    - Κ
+    - Μ
+    - Ν
+    - Ο
+    - Ρ
+    - Τ
+    - Υ
+    - Χ
+  selection_lower:
+    TargetFilename|contains:
+    - а
+    - е
+    - о
+    - р
+    - с
+    - х
+    - ѕ
+    - і
+    - ӏ
+    - ј
+    - һ
+    - ԁ
+    - ԛ
+    - ԝ
+    - ο
+  condition: 1 of selection_*
+falsepositives:
+- File names with legitimate Cyrillic text. Will likely require tuning (or not be
+  usable) in countries where these alphabets are in use.
+level: medium

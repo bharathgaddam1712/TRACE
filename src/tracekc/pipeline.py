@@ -8,6 +8,7 @@ import platform
 import shutil
 import threading
 import time
+import os
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -21,7 +22,7 @@ from tracekc.detect import detect
 from tracekc.engine import connect
 from tracekc.ingest import ingest
 from tracekc.label import label, load_mapping
-from tracekc.materialize import materialize
+from tracekc.materialize import materialize, write_json
 from tracekc.reach import AccessGraph
 from tracekc.sigma import load_rules
 
@@ -65,6 +66,24 @@ def _hash_dir(path: Path, pattern: str) -> str:
 
 
 def run_pipeline(cfg: dict, input_dir: Path, out_dir: Path, keep_work: bool = False) -> dict:
+    input_dir, out_dir = input_dir.resolve(), out_dir.resolve()
+    if input_dir.is_dir() and out_dir.is_relative_to(input_dir):
+        raise ValueError('Output must be outside the input directory to avoid ingesting generated files')
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lock = out_dir / '.pipeline.lock'
+    try:
+        descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise ValueError(f'Output is locked by another run. If no pipeline is running, remove {lock}') from None
+    try:
+        with os.fdopen(descriptor, 'w') as stream:
+            stream.write(str(os.getpid()))
+        return _run_pipeline(cfg, input_dir, out_dir, keep_work)
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _run_pipeline(cfg: dict, input_dir: Path, out_dir: Path, keep_work: bool = False) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     work = out_dir / "work"
     if work.exists():
@@ -76,7 +95,12 @@ def run_pipeline(cfg: dict, input_dir: Path, out_dir: Path, keep_work: bool = Fa
     def stage(name):
         t = time.perf_counter()
         log.info("stage %s ...", name)
-        yield
+        write_json(out_dir / 'progress.json', {'state': 'running', 'stage': name, 'timings': timings})
+        try:
+            yield
+        except Exception as exc:
+            write_json(out_dir / 'progress.json', {'state': 'failed', 'stage': name, 'error': str(exc), 'timings': timings})
+            raise
         timings[f"{name}_seconds"] = round(time.perf_counter() - t, 3)
         log.info("stage %s done in %.2fs", name, timings[f"{name}_seconds"])
 
@@ -88,18 +112,25 @@ def run_pipeline(cfg: dict, input_dir: Path, out_dir: Path, keep_work: bool = Fa
     try:
         with stage("ingest"):
             report["ingest"] = ingest(con, cfg, input_dir, work)
+            quality=report['ingest']
+            report['input_quality']='partially_quarantined' if any(quality.get(key,0) for key in ('quarantined_rows','adapter_rejected_records','reader_rejected_records')) else 'valid_for_supported_schema'
         rules_dir = project_path(cfg, cfg["detection"]["rules_dir"])
         rules, errors = load_rules(rules_dir)
         for e in errors:
             log.warning("rule rejected: %s", e)
         report["rules"] = {"loaded": len(rules), "rejected": errors, "ruleset_hash": _hash_dir(rules_dir, "*.y*ml")}
+        report['rules']['covered_techniques']=sorted({technique for rule in rules.values() for technique in rule.techniques})
+        inventory=rules_dir/'community'/'manifest.json'
+        if inventory.exists():
+            pack=json.loads(inventory.read_text(encoding='utf-8-sig'))
+            report['rules']['community']={'commit':pack['commit'],**pack['summary']}
         with stage("detect"):
             report["detect"] = detect(con, cfg, rules)
         mapping_path = project_path(cfg, "configs/attack_mapping.yaml")
         with stage("label"):
             report["label"] = label(con, load_mapping(mapping_path))
         sup_path = project_path(cfg, "configs/suppressions.yaml")
-        suppressions = (yaml.safe_load(sup_path.read_text()) or {}).get("suppressions") or [] if sup_path.exists() else []
+        suppressions = (yaml.safe_load(sup_path.read_text(encoding="utf-8-sig")) or {}).get("suppressions") or [] if sup_path.exists() else []
         with stage("correlate"):
             report["signals"] = build_signals(con, cfg, suppressions)
             edges = link_edges(con, cfg)
@@ -108,7 +139,7 @@ def run_pipeline(cfg: dict, input_dir: Path, out_dir: Path, keep_work: bool = Fa
             report["correlate"] = {"edges": len(edges)}
         with stage("materialize"):
             graph = AccessGraph(con, cfg)
-            report["output"] = materialize(con, cfg, out_dir, promoted, isolated, graph)
+            report["output"] = materialize(con, cfg, out_dir, promoted, isolated, graph, edges)
     finally:
         con.close()
         peak = sampler.stop()
@@ -120,7 +151,8 @@ def run_pipeline(cfg: dict, input_dir: Path, out_dir: Path, keep_work: bool = Fa
                          "ram_gb": round(psutil.virtual_memory().total / 1024 ** 3, 1),
                          "memory_limit": cfg["engine"]["memory_limit"]}
     report["attack_mapping_version"] = report.get("label", {}).get("attack_version")
-    (out_dir / "run_metrics.json").write_text(json.dumps(report, indent=1, default=str))
+    write_json(out_dir / 'run_metrics.json', report)
+    write_json(out_dir / 'progress.json', {'state': 'complete', 'stage': 'complete', 'timings': timings,'input_quality':report['input_quality']})
     if not keep_work:
         shutil.rmtree(work, ignore_errors=True)
     return report

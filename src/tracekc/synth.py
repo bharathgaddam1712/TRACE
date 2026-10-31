@@ -124,7 +124,7 @@ def scale_up(sample: Path, out_dir: Path, target_gb: float, span_hours: float = 
     """Replicate the sample to roughly target_gb of NDJSON for load tests (fresh event ids, timestamps
     spread over span_hours). Optionally plants one attack chain mid-way and writes its ground truth."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    lines = sample.read_text().splitlines()
+    lines = sample.read_text(encoding="utf-8-sig").splitlines()
     sample_bytes = sum(len(x) + 1 for x in lines)
     copies = max(1, int(target_gb * 1024 ** 3 / sample_bytes))
     t0 = datetime(2026, 10, 31, 0, 0, tzinfo=timezone.utc)

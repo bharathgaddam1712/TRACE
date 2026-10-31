@@ -1,97 +1,24 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TRACE incidents</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
-<style>
-  :root { --bg:#f7f7f5; --panel:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#e2e2dc; --accent:#b4322a;
-          --obs:#2b6cb0; --inf:#a0a0a0; --sel:#fbeaea; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#151514; --panel:#1f1f1d; --ink:#ecece8; --muted:#a3a39c;
-          --line:#33332f; --accent:#ff7a6e; --obs:#6aa8f0; --inf:#777; --sel:#3a2422; } }
-  * { box-sizing:border-box; } body { margin:0; font:14px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--ink); }
-  header { padding:12px 16px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
-  header h1 { font-size:18px; margin:0; } header span { color:var(--muted); }
-  main { display:grid; grid-template-columns:minmax(260px, 340px) 1fr; min-height:calc(100vh - 50px); }
-  @media (max-width: 800px) { main { grid-template-columns:1fr; } }
-  #list { border-right:1px solid var(--line); overflow:auto; max-height:calc(100vh - 50px); }
-  .inc { padding:10px 16px; border-bottom:1px solid var(--line); cursor:pointer; }
-  .inc:hover, .inc.sel { background:var(--sel); }
-  .inc b { color:var(--accent); } .inc small { color:var(--muted); display:block; }
-  #detail { padding:16px; overflow:auto; }
-  #graph { height:380px; border:1px solid var(--line); border-radius:6px; background:var(--panel); margin:12px 0; }
-  table { border-collapse:collapse; width:100%; background:var(--panel); font-size:13px; }
-  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
-  th { color:var(--muted); font-weight:600; } td.obs { color:var(--obs); } td.inf { color:var(--inf); }
-  pre { white-space:pre-wrap; background:var(--panel); border:1px solid var(--line); padding:10px; border-radius:6px; }
-  .chips span { display:inline-block; padding:2px 8px; margin:2px; border:1px solid var(--line); border-radius:10px; font-size:12px; }
-  .scroll { overflow-x:auto; }
-</style>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TRACE · Security investigations</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/vendor/cytoscape.min.js" defer></script><script src="/app.js" defer></script>
 </head>
 <body>
-<header><h1>TRACE</h1><span id="meta">loading…</span></header>
+<header><div><strong>TRACE</strong><span class="muted"> Attack investigation</span></div><div id="health" role="status">Connecting…</div><button id="refresh">Refresh</button></header>
+<section class="runbar" aria-label="Processing status"><span id="progress">Waiting for pipeline</span><span id="quality"></span></section>
 <main>
-  <div id="list"></div>
-  <div id="detail"><p>Select an incident.</p></div>
+<aside>
+<h1>Investigations</h1>
+<label>Search host, user or incident<input id="search" type="search" placeholder="Search incidents…"></label>
+<div class="filters"><label>Min. risk<input id="min-score" type="number" min="0" max="100" value="0"></label><label>Status<select id="status-filter"><option value="">All statuses</option><option>new</option><option>investigating</option><option>contained</option><option>closed</option></select></label></div>
+<div id="list" aria-label="Incident list"></div><button id="load-more" hidden>Load more incidents</button>
+<details><summary>API connection</summary><label>Bearer token (if configured)<input id="api-token" type="password" autocomplete="off"></label><button id="connect">Connect</button></details>
+</aside>
+<article id="workspace"><div class="empty"><h2>Follow the evidence.</h2><p>Select an incident to inspect its timeline, relationships and possible next targets.</p></div></article>
 </main>
-<script>
-const $ = s => document.querySelector(s);
-const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-async function load() {
-  const [idx, health] = await Promise.all([fetch("/incidents?limit=500").then(r => r.json()), fetch("/health").then(r => r.json())]);
-  $("#meta").textContent = `${health.incidents} incidents, sorted by risk`;
-  $("#list").innerHTML = idx.map(i => `<div class="inc" data-id="${i.id}">
-      <b>#${i.id} · ${i.score}</b> ${esc(i.title)}
-      <small>${esc(i.first_seen)} · ${i.signal_count} steps · ${i.merged_alert_count} alerts merged</small></div>`).join("")
-    || "<p style='padding:16px'>No incidents.</p>";
-  document.querySelectorAll(".inc").forEach(el => el.onclick = () => show(el.dataset.id));
-  if (idx.length) show(idx[0].id);
-}
-async function show(id) {
-  document.querySelectorAll(".inc").forEach(el => el.classList.toggle("sel", el.dataset.id == id));
-  const inc = await fetch(`/incidents/${id}`).then(r => r.json());
-  $("#detail").innerHTML = `
-    <h2>#${inc.id} ${esc(inc.title)}</h2>
-    <div class="chips">${inc.tactics.map(t => `<span>${esc(t)}</span>`).join("")}</div>
-    <p><b>Path:</b> ${esc(inc.host_path_text)} · <b>Risk:</b> ${inc.score}/100 · <b>Alerts merged:</b> ${inc.merged_alert_count}</p>
-    <div id="graph"></div>
-    <h3>Timeline</h3><div class="scroll"><table><tr><th>#</th><th>Time (UTC)</th><th>Technique</th><th>Stage</th>
-      <th>Host</th><th>Account</th><th>What</th><th>Linked because</th></tr>
-      ${inc.timeline.map(s => `<tr><td>${s.step}</td><td>${esc(s.ts)}</td>
-        <td>${esc(s.technique || "-")}<br><small>${esc(s.technique_name || "")}</small></td>
-        <td>${esc(s.kill_chain_stage || "-")}</td><td>${esc(s.host)}${s.src_host && s.src_host !== s.host ? "<br><small>from " + esc(s.src_host) + "</small>" : ""}</td>
-        <td>${esc(s.user || "-")}</td><td>${esc(s.title)}<br><small>${s.merged_detections} detection(s), ${s.event_count} event(s)</small></td>
-        <td class="${s.link ? (s.link.kind === "observed" ? "obs" : "inf") : ""}">${s.link ? esc(s.link.kind + ": " + s.link.reasons.join("; ")) : "start"}</td></tr>`).join("")}
-    </table></div>
-    <h3>What the attacker could reach next</h3>
-    ${inc.lookahead.reachable.length ? `<div class="scroll"><table><tr><th>Asset</th><th>Relation</th><th>Via</th><th>Confidence</th></tr>
-      ${inc.lookahead.reachable.map(r => `<tr><td>${esc(r.asset)}</td><td>${esc(r.relation)}</td><td>${esc(r.via)}</td><td>${esc(r.confidence)}</td></tr>`).join("")}</table></div>`
-      : `<p>Unknown: ${esc(inc.lookahead.assumptions.join("; "))}</p>`}
-    <h3>Report</h3><pre>${esc(inc.narrative)}</pre>
-    <p><small>Rule authors (Sigma DRL attribution): ${esc(inc.attribution.join(", "))}</small></p>`;
-  if (!window.cytoscape) { $("#graph").textContent = "Graph library unavailable offline; see path and timeline."; return; }
-  const ink = getComputedStyle(document.documentElement).getPropertyValue("--ink").trim();
-  const color = {host: "#2b6cb0", user: "#2f855a", external: "#b4322a"};
-  cytoscape({
-    container: $("#graph"),
-    elements: [
-      ...inc.graph.nodes.map(n => ({data: {id: n.id, label: n.label + (n.role && n.role !== "workstation" ? ` (${n.role})` : ""),
-                                         c: n.potential ? "#999" : color[n.type] || "#666", dash: n.potential ? "dashed" : "solid"}})),
-      ...inc.graph.edges.map((e, i) => ({data: {id: "e" + i, source: e.source, target: e.target,
-                                                label: e.kind + (e.steps ? " #" + e.steps.join(",") : ""),
-                                                dash: e.kind === "could_reach" ? "dashed" : "solid"}})),
-    ],
-    style: [
-      {selector: "node", style: {"background-color": "data(c)", label: "data(label)", color: ink, "font-size": 11,
-                                 "border-width": 2, "border-style": "data(dash)", "border-color": "data(c)"}},
-      {selector: "edge", style: {"curve-style": "bezier", "target-arrow-shape": "triangle", label: "data(label)",
-                                 "font-size": 9, color: ink, width: 1.5, "line-style": "data(dash)"}},
-    ],
-    layout: {name: "breadthfirst", directed: true, spacingFactor: 1.2},
-  });
-}
-load().catch(e => $("#meta").textContent = "API error: " + e);
-</script>
-</body>
-</html>
+<dialog id="evidence-dialog"><button id="close-evidence">Close</button><h2>Event evidence</h2><pre id="evidence-content"></pre></dialog>
+<footer>Read → Detect → Map → Link → Graph → Predict → Investigate</footer>
+</body></html>

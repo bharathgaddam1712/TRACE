@@ -8,3 +8,8 @@ data/tiers/
 data/planted/
 attack/*.json
 *.zip
+.env
+.env.*
+!.env.example
+*.sqlite3*
+.pytest_cache/
