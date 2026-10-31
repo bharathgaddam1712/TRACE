@@ -107,7 +107,13 @@ def create_app(out_dir: Path, ai_service=None) -> FastAPI:
     @app.get('/health')
     def health():
         store.refresh()
-        return {'status': 'ok', 'incidents': len(store.index)}
+        return {'status': 'ok', 'incidents': len(store.index), 'graph_backend':'neo4j' if neo else 'local',
+                'graph_algorithms':['bounded_bfs','depth_constrained_dijkstra','bounded_earliest_arrival']}
+
+    @app.get('/parser-schemas')
+    def parser_schemas():
+        from tracekc.parser_contracts import contracts
+        return contracts()
 
     @app.get('/progress')
     def progress():
@@ -195,6 +201,19 @@ def create_app(out_dir: Path, ai_service=None) -> FastAPI:
             get(incident_id)
             graph=GraphIndex(graph).neighborhood(f'incident:{incident_id}',depth)
         return {**store.relationships,'graph':graph}
+
+    @app.get('/incidents/{inc_id}/temporal-path')
+    def temporal_path(inc_id:int,source:str,target:str,depth:int=Query(max_depth,ge=1,le=max_depth),start:str='',end:str=''):
+        inc=get(inc_id)
+        try:
+            start_ms=int(timestamp(start or inc['first_seen']).timestamp()*1000)
+            cutoff=min(int(timestamp(end or inc['last_seen']).timestamp()*1000),
+                       int(timestamp(inc['last_seen']).timestamp()*1000))
+            return graph_index(inc_id).temporal_path(source,target,start_ms,cutoff,depth)
+        except KeyError:
+            raise HTTPException(404,'Graph source or target not found') from None
+        except ValueError as exc:
+            raise HTTPException(422,str(exc)) from None
 
     @app.get('/incidents/{inc_id}/path')
     def path(inc_id: int):

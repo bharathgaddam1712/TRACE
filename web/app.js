@@ -23,10 +23,10 @@ async function refresh() {
     const [rows, health, progress, metrics, ai] = await Promise.all([api('/incidents?' + query), api('/health'), api('/progress'), api('/metrics'), api('/ai/status')]);
     if (version !== loadVersion) return;
     aiStatus = ai;
-    $('#health').textContent = `${health.incidents} incidents · ${ai.enabled ? 'Sarvam ready' : 'Local mode'}`;
+    $('#health').textContent = `${health.incidents} incidents · Graph: ${health.graph_backend || 'local'} · ${ai.enabled ? 'Sarvam ready' : 'Local mode'}`;
     $('#progress').textContent = `Pipeline: ${progress.state} · ${progress.stage}`;
     const quality = metrics.ingest || {};
-    $('#quality').textContent = quality.events === undefined ? 'No completed run yet' : `${quality.events.toLocaleString()} events · ${quality.quarantined_rows} quarantined · ${(quality.adapter_rejected_records || 0) + (quality.reader_rejected_records || 0)} rejected input line fragments · ${quality.reused_files || 0} cached files`;
+    $('#quality').textContent = quality.events === undefined ? 'No completed run yet' : `${(quality.valid_events ?? quality.events).toLocaleString()} valid events · ${quality.quarantined_rows} parsed rows quarantined · ${(quality.adapter_rejected_records || 0) + (quality.reader_rejected_records || 0)} rejected input line fragments · ${((quality.reader_rejected_bytes || 0)/1048576).toFixed(1)} MiB rejected · ${quality.reused_files || 0} cached files`;
     $('#list').innerHTML = rows.map(row => `<button class="incident ${current?.id === row.id ? 'selected':''}" data-id="${row.id}"><strong>${esc(row.score)}/100</strong> · ${esc(row.status)}<div>${esc(row.title)}</div><small>${row.signal_count} steps · ${row.merged_alert_count} merged alerts</small><small>${esc(row.first_seen)}</small></button>`).join('') || '<p class="muted">No incidents match these filters. Isolated detections remain available in Findings.</p>';
     $('#load-more').hidden=rows.length<1000;
     $('#list').querySelectorAll('[data-id]').forEach(button => button.addEventListener('click', () => showIncident(Number(button.dataset.id))));
@@ -65,7 +65,11 @@ function render() {
   $('#fit-graph').addEventListener('click', () => cy?.fit(undefined, 35));
   $('#graph-mode').addEventListener('change', loadGraphMode);
   $('#expand-neighborhood').addEventListener('click', expandNeighborhood);
-  $('#find-path').addEventListener('click', findPath);
+  $('#find-path').addEventListener('click', ()=>findPath(false));
+  const temporalPathButton=document.createElement('button');
+  temporalPathButton.textContent='Find time-respecting path';
+  temporalPathButton.addEventListener('click',()=>findPath(true));
+  $('#find-path').after(temporalPathButton);
   $('#reset-graph').addEventListener('click',()=>{graphOverride=null;$('#graph-mode').value='entities';drawGraph();});
   $('#ask-ai').addEventListener('click', askAI);
   $('#save-case').addEventListener('click', saveCase);
@@ -137,10 +141,10 @@ async function expandNeighborhood() {
     if(current!==inc)return;graphOverride=result;drawGraph();$('#graph-detail').textContent=result.truncated?'Neighborhood is capped. Reduce depth to inspect all returned links.':`Showing depth ${depth}; ${result.nodes.length} nodes, ${result.edges.length} edges.`;
   }catch(error){if(current===inc)$('#graph-detail').textContent=error.message;}
 }
-async function findPath() {
+async function findPath(temporal=false) {
   const inc=current;
   try {
-    const result=await api(`/incidents/${inc.id}/shortest-path?`+new URLSearchParams({source:$('#path-source').value,target:$('#path-target').value,depth:$('#graph-depth').value || '6'}));
+    const result=await api(`/incidents/${inc.id}/${temporal?'temporal-path':'shortest-path'}?`+new URLSearchParams({source:$('#path-source').value,target:$('#path-target').value,depth:$('#graph-depth').value || '6'}));
     if(current!==inc)return;graphOverride=null;$('#graph-mode').value='entities';$('#from-step').value='';$('#to-step').value='';$('#entity-type').value='';drawGraph();
     const ids=new Set([...(result.nodes || []),...(result.edge_ids || [])]);cy?.elements().filter(element=>ids.has(element.id())).addClass('highlight');
     $('#graph-search-result').hidden=false;$('#graph-search-result').textContent=JSON.stringify(result,null,2);

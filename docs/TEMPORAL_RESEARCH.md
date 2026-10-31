@@ -145,3 +145,17 @@ top-5 is additionally reported by horizon on the held-out set, not used to tune 
 
 The sequence model uses compact in-memory dictionaries. DuckDB handles event
 processing and extraction; Neo4j is unnecessary for this bounded prediction task.
+
+## Time-respecting graph search
+
+The graph now additionally supports a bounded earliest-arrival algorithm over
+explicit recorded observation timestamps. It keeps the earliest arrival per
+(node, hop-count) state and uses a priority queue, with binary search over each
+edge's sorted observations. Waiting is allowed. An earlier arrival dominates a
+later arrival with the same hop count; limiting depth bounds traversal.
+
+Observed first/last signal times are stored as actual endpoints; intermediate
+times are not fabricated. The algorithm excludes untimed, inferred and hypothesis
+edges and respects an incident cutoff. It can reject a cheap Dijkstra path whose
+edge observations occur in reverse chronological order. A time-respecting chain
+of observed associations is still not proof of an attacker's route.

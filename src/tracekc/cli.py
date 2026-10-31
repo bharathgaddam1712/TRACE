@@ -158,6 +158,12 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="tracekc", description=__doc__)
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)
+    schemas = sub.add_parser('parser-schemas',help='Print supported input contracts and explicit ECS projection')
+    def schema_command(args):
+        from tracekc.parser_contracts import contracts
+        print(json.dumps(contracts(),indent=2))
+        return 0
+    schemas.set_defaults(fn=schema_command)
     temporal = sub.add_parser('temporal-benchmark', help='Causal network interaction ranking; not attack accuracy')
     temporal.add_argument('--events', required=True, help='Normalized work/events.parquet from run --keep-work')
     temporal.add_argument('--out', required=True)

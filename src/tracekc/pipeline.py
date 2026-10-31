@@ -19,7 +19,7 @@ from tracekc import __version__
 from tracekc.config import project_path
 from tracekc.correlate import assemble, build_signals, link_edges, record_assignment
 from tracekc.detect import detect
-from tracekc.engine import connect
+from tracekc.engine import connect, finish_query_profile
 from tracekc.ingest import ingest
 from tracekc.label import label, load_mapping
 from tracekc.materialize import materialize, write_json
@@ -141,6 +141,7 @@ def _run_pipeline(cfg: dict, input_dir: Path, out_dir: Path, keep_work: bool = F
             graph = AccessGraph(con, cfg)
             report["output"] = materialize(con, cfg, out_dir, promoted, isolated, graph, edges)
     finally:
+        finish_query_profile(con)
         con.close()
         peak = sampler.stop()
     timings["total_wall_seconds"] = round(time.perf_counter() - wall, 3)

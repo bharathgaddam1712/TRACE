@@ -89,6 +89,8 @@ def _graph(sigs: list[dict], ext_ips: set[str], reach: dict, links=()) -> dict:
         e['event_ids'] = sorted(set(e['event_ids']) | set(sigs[step - 1]['event_ids'] or []))[:100]
         e['first_seen'] = iso(min(sigs[x - 1]['ts_first_ms'] for x in e['steps']))
         e['last_seen'] = iso(max(sigs[x - 1]['ts_last_ms'] for x in e['steps']))
+        e['observation_times_ms'] = sorted(set(e.get('observation_times_ms',[])) |
+                                           {sigs[step-1]['ts_first_ms'],sigs[step-1]['ts_last_ms']})
         if technique and technique not in e["techniques"]:
             e["techniques"].append(technique)
 
@@ -143,6 +145,7 @@ def _graph(sigs: list[dict], ext_ips: set[str], reach: dict, links=()) -> dict:
             'kind':'correlates_with', 'relation':link['relation'],
             'steps':[link['from_step'],link['to_step']], 'event_ids':link['event_ids'],
             'evidence_kind':link['kind'], 'similarity':link['similarity'],
+            'observation_times_ms':[max(left['ts_first_ms'],right['ts_first_ms'])],
             'cost':1.0 if link['kind']=='observed' else 1/max(link['similarity'],0.05)}
     indexed = GraphIndex({'nodes':list(nodes.values()),'edges':list(edges.values())})
     return {'nodes':list(indexed.nodes.values()),'edges':list(indexed.edges.values())}

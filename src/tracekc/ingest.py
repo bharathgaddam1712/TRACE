@@ -165,7 +165,7 @@ def ingest_chunks(con, source, fmt, settings, cache, work, reader_signature):
         plan=prepare(source,cache,work,immutable_signature,int(settings['maximum_object_size']),
                      chunk_bytes=int(settings['chunk_bytes']),allow_final=True)
         if plan['reader'] is None:
-            return plan['prior'],parsed,plan['prior_rejected']
+            return plan['prior'],parsed,plan['prior_rejected'],plan['rejection_files']
         shard=cache/(plan['key']+'.parquet');temporary=shard.with_suffix('.tmp.parquet')
         reader=plan['reader']
         if fmt=='fortigate':
@@ -199,7 +199,7 @@ def ingest_chunks(con, source, fmt, settings, cache, work, reader_signature):
         temporary_progress.write_text(json.dumps({'state':'running','stage':'ingest','source':source.name,
               'completed_bytes':plan['offset'],'source_bytes':before.st_size,'chunks':len(group)}),encoding='utf-8')
         temporary_progress.replace(progress)
-        if plan['offset']==before.st_size:return group,parsed,plan.get('prior_rejected',0)+plan.get('new_rejected',0)
+        if plan['offset']==before.st_size:return group,parsed,plan.get('prior_rejected',0)+plan.get('new_rejected',0),plan['rejection_files']
 
 
 def ingest(con, cfg: dict, input_dir: Path, work_dir: Path) -> dict:
@@ -213,6 +213,7 @@ def ingest(con, cfg: dict, input_dir: Path, work_dir: Path) -> dict:
     cache.mkdir(parents=True, exist_ok=True)
     shards, manifest, formats = [], [], {}
     reused = rejected = parsed_bytes = deferred_bytes = reader_rejected = 0
+    reader_rejected_bytes = 0
     reader_signature = hashlib.sha256((NORMALIZE_SQL + json.dumps(ECS_COLUMNS, sort_keys=True) + json.dumps(settings,sort_keys=True)).encode()
         + Path(__file__).with_name('adapters.py').read_bytes() + Path(__file__).with_name('fortigate.py').read_bytes()).hexdigest()
     for number, source in enumerate(files, 1):
@@ -220,11 +221,15 @@ def ingest(con, cfg: dict, input_dir: Path, work_dir: Path) -> dict:
         fmt = input_format(source, settings.get('format', 'auto'))
         chunk_bytes=int(settings.get('chunk_bytes',0))
         if incremental and not settings.get('append_only') and chunk_bytes and before.st_size>chunk_bytes and fmt in {'ecs','fortigate'} and source.suffix!='.gz':
-            group,processed,invalid=ingest_chunks(con,source,fmt,settings,cache,work_dir,reader_signature)
+            group,processed,invalid,rejection_files=ingest_chunks(con,source,fmt,settings,cache,work_dir,reader_signature)
             reader_rejected+=invalid
+            rejected_bytes = sum(json.loads(line)['bytes'] for name in set(rejection_files)
+                                 for line in (cache/name).read_text(encoding='utf-8').splitlines())
+            reader_rejected_bytes += rejected_bytes
             shards.extend(group);parsed_bytes+=processed;reused+=int(processed==0)
             formats[fmt]=formats.get(fmt,0)+1
-            manifest.append({'source':str(source),'size':before.st_size,'format':fmt,'shards':len(group),'rejected_records':0})
+            manifest.append({'source':str(source),'size':before.st_size,'format':fmt,'shards':len(group),
+                             'rejected_records':invalid,'rejected_bytes':rejected_bytes,'rejection_files':rejection_files})
             continue
         append = None
         if incremental and settings.get('append_only', False) and fmt in {'ecs','fortigate'} and source.suffix != '.gz':
@@ -312,12 +317,20 @@ def ingest(con, cfg: dict, input_dir: Path, work_dir: Path) -> dict:
     run(con, f"COPY (SELECT *, CASE WHEN ts_ms IS NULL AND host IS NULL THEN 'missing_time_and_host' WHEN ts_ms IS NULL THEN 'missing_time' ELSE 'missing_host' END AS quarantine_reason FROM bad_rows) TO {lit(work_dir.parent / 'quarantine.parquet')} (FORMAT parquet)")
     (work_dir.parent / 'ingest_manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
     raw_count = one(con, 'SELECT count(*) FROM normalized')[0]
+    from tracekc.parser_contracts import contracts
+    (work_dir.parent/'parser_contracts.json').write_text(json.dumps(contracts(),indent=2),encoding='utf-8')
+    profile = dict(zip(('missing_timestamp','missing_host','missing_user','missing_action','missing_network_endpoints'),
+                       one(con, """SELECT count(*) FILTER (WHERE ts_ms IS NULL),
+                           count(*) FILTER (WHERE host IS NULL),
+                           count(*) FILTER (WHERE ts_ms IS NOT NULL AND host IS NOT NULL AND user_name IS NULL),
+                           count(*) FILTER (WHERE action IS NULL),
+                           count(*) FILTER (WHERE action='network_connection' AND (src_ip IS NULL OR dst_ip IS NULL))
+                           FROM events_all""")))
     stats = {'input_files': len(files), 'input_bytes': sum(f.stat().st_size for f in files),
              'events': int(total), 'records_before_deduplication':raw_count, 'quarantined_rows': int(bad), 'parsed_input_bytes': parsed_bytes, 'deferred_tail_bytes': deferred_bytes, 'normalized_shards': len(shards), 'duplicates_removed': raw_count - total,
-             'adapter_rejected_records': rejected, 'reader_rejected_records':reader_rejected, 'reused_files': reused, 'formats': formats,
-             'missing_timestamp': one(con, 'SELECT count(*) FROM events_all WHERE ts_ms IS NULL')[0],
-             'missing_host': one(con, 'SELECT count(*) FROM events_all WHERE host IS NULL')[0],
-             'missing_user': one(con, 'SELECT count(*) FROM events WHERE user_name IS NULL')[0],
+             'adapter_rejected_records': rejected, 'reader_rejected_records':reader_rejected,
+             'reader_rejected_bytes':reader_rejected_bytes, 'reused_files': reused, 'formats': formats,
+             **profile, 'valid_events':int(total-bad), 'parser_contract_version':1,
              'ts_min_ms': tmin, 'ts_max_ms': tmax,
              'hosts_with_ips': one(con, 'SELECT count(DISTINCT host) FROM ip_host')[0],
              'parquet_bytes': events_path.stat().st_size}

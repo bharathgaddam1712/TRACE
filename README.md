@@ -1,9 +1,14 @@
 # TRACE: evidence-backed attack investigation
 
-For the reproducible 500 MiB real-log demo, bounded attacker-technique sequences,
+Local Streamlit demo: install `pip install -e ".[demo,temporal]"`, then run
+`scripts/start_streamlit.ps1` and open http://127.0.0.1:8501. Build full-log results
+with `scripts/demo.ps1`; the UI shows progress while processing.
+
+For the full-file local demo, bounded attacker-technique sequences,
 and causal temporal ML experiments, see [demo commands](docs/DEMO.md) and
 [research / evaluation design](docs/TEMPORAL_RESEARCH.md). The large demo input is
-stored with Git LFS. Temporal interaction scores are not attack-prediction accuracy.
+stored with Git LFS as an optional earlier benchmark; the default demo uses the
+complete local log. Temporal interaction scores are not attack-prediction accuracy.
 
 TRACE reads security logs, detects suspicious behavior, maps it to MITRE ATT&CK, links related signals into incidents, builds an evidence graph, estimates possible next access, and serves an investigation UI.
 

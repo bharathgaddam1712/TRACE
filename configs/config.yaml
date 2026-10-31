@@ -4,8 +4,10 @@
 
 engine:
   memory_limit: "5GB"        # DuckDB buffer cap; spills to temp_directory beyond this
-  threads: 0                 # 0 = all cores
+  threads: 0                 # 0 = conservative auto (up to 4); benchmark larger counts
   temp_directory: "work/duckdb_tmp"
+  max_temp_directory_size: "20GB"
+  profile_queries: false     # opt-in query-shape wall-time totals; excludes SQL literals
 
 ingest:
   # File patterns searched recursively under --input. Gzip is detected automatically.

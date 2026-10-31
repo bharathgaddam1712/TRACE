@@ -4,6 +4,7 @@ import hashlib
 import heapq
 import json
 import math
+from bisect import bisect_left
 
 
 class GraphIndex:
@@ -20,6 +21,7 @@ class GraphIndex:
             if edge['source'] not in self.nodes or edge['target'] not in self.nodes:
                 raise ValueError('Graph contains a dangling edge')
             self.edges[edge['id']] = edge
+            edge['observation_times_ms'] = sorted(set(int(t) for t in edge.get('observation_times_ms',[])))
             self.adjacency[edge['source']].append((edge['target'],edge['id'],True))
             self.adjacency[edge['target']].append((edge['source'],edge['id'],False))
 
@@ -68,6 +70,49 @@ class GraphIndex:
                 if candidate < distances.get(new,float('inf')):
                     distances[new]=candidate;previous[new]=(state,eid);heapq.heappush(queue,(candidate,hops+1,neighbor))
         return {'status':'not_found','algorithm':'depth_constrained_dijkstra','max_depth':max_depth}
+
+    def temporal_path(self, source, target, start_ms, as_of_ms, max_depth=6):
+        """Earliest-arrival path over recorded observation times, with waiting.
+
+        Untimed/inferred/hypothesis edges are excluded. For each (node,hops), an
+        earlier arrival dominates a later arrival. Never invent intermediate
+        observations inside an aggregated first/last interval.
+        """
+        if source not in self.nodes or target not in self.nodes:
+            raise KeyError('Unknown source or target')
+        if start_ms > as_of_ms or not 1 <= max_depth <= 12:
+            raise ValueError('Use ordered timestamps and depth 1..12')
+        distance, previous = {(source,0):start_ms}, {}
+        queue = [(start_ms,0,source)]
+        while queue:
+            arrival,hops,node = heapq.heappop(queue)
+            state=(node,hops)
+            if distance[state] != arrival:
+                continue
+            if node == target:
+                nodes,edges,times = [node],[],[]
+                while state in previous:
+                    state,eid,observed = previous[state]
+                    nodes.append(state[0]);edges.append(eid);times.append(observed)
+                return {'status':'found','algorithm':'bounded_earliest_arrival',
+                        'nodes':nodes[::-1],'edge_ids':edges[::-1], 'observation_times_ms':times[::-1],
+                        'arrival_ms':arrival,'hops':hops,'as_of_ms':as_of_ms,
+                        'interpretation':'Time-respecting observed associations; does not establish an attacker route.'}
+            if hops >= max_depth:
+                continue
+            for neighbor,eid,forward in self.adjacency[node]:
+                edge=self.edges[eid]
+                if not forward or edge['evidence_kind'] in {'inferred','hypothesis'}:
+                    continue
+                times=edge['observation_times_ms'];position=bisect_left(times,arrival)
+                if position == len(times) or times[position] > as_of_ms:
+                    continue
+                observed=times[position];new=(neighbor,hops+1)
+                if observed < distance.get(new,float('inf')):
+                    distance[new]=observed;previous[new]=(state,eid,observed)
+                    heapq.heappush(queue,(observed,hops+1,neighbor))
+        return {'status':'not_found','algorithm':'bounded_earliest_arrival','max_depth':max_depth,
+                'as_of_ms':as_of_ms,'reason':'No ordered observed path; untimed, inferred and hypothesis edges excluded.'}
 
 
 def weighted_jaccard(left, right):
