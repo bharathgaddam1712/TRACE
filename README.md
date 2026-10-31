@@ -4,6 +4,10 @@ Local Streamlit demo: install `pip install -e ".[demo,temporal]"`, then run
 `scripts/start_streamlit.ps1` and open http://127.0.0.1:8501. Build full-log results
 with `scripts/demo.ps1`; the UI shows progress while processing.
 
+SOC triage is available under **7 · Show**: campaign context, DuckDB history and
+duplicate candidates, structured Sarvam assessment, optional investigation,
+report drafts and explicit analyst review. See [triage architecture](docs/TRIAGE.md).
+
 For the full-file local demo, bounded attacker-technique sequences,
 and causal temporal ML experiments, see [demo commands](docs/DEMO.md) and
 [research / evaluation design](docs/TEMPORAL_RESEARCH.md). The large demo input is

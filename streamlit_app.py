@@ -175,6 +175,34 @@ with tabs[5]:
 
 with tabs[6]:
     st.write('Timeline, raw evidence, analyst notes, reports and optional Sarvam assistance.')
+    st.subheader('SOC triage workflow')
+    st.caption('Campaign facts → entity history / duplicate context → triage → optional investigation → report draft → analyst review. Alerts remain visible.')
+    from tracekc.triage import TriagePipeline,TriageRequest,TriageReview
+    triage=TriagePipeline(output)
+    investigate=st.checkbox('Include follow-up investigation (additional Sarvam request)',value=False)
+    if st.button('Run triage agent'):
+        from tracekc.label import load_mapping
+        with st.spinner('Retrieving past context and triaging the incident…'):
+            st.session_state['triage_result']=triage.run(incident,TriageRequest(investigate=investigate),
+                                                       load_mapping(PROJECT_ROOT/'configs/attack_mapping.yaml'))
+    triage_result=st.session_state.get('triage_result')
+    if not triage_result or triage_result.get('fingerprint')!=incident['fingerprint']:
+        triage_result=triage.latest(incident['fingerprint'])['result']
+    if triage_result:
+        st.write(f"Triage: {triage_result['status']} · {triage_result['verdict']['priority']}")
+        st.json(triage_result['verdict'])
+        with st.expander('Grounding, investigation and audit details'):st.json(triage_result)
+        st.download_button('Download triage draft',triage_result['report_draft'],file_name=f"triage-{incident['id']}.md")
+        if not triage_result['errors']:
+            with st.form('triage_review'):
+                decision=st.selectbox('Analyst triage decision',['escalate','monitor','likely_benign'])
+                reason=st.text_area('Reason for analyst decision',max_chars=4000)
+                if st.form_submit_button('Record analyst review'):
+                    try:
+                        triage.review(incident['fingerprint'],TriageReview(context_hash=triage_result['context_hash'],decision=decision,note=reason))
+                        st.success('Analyst review recorded. Case status remains an explicit separate action.')
+                    except ValueError as exc:st.error(str(exc))
+    with st.expander('Triage review history'):st.json(triage.latest(incident['fingerprint'])['reviews'])
     with st.expander('Isolated findings and audited suppressions'):
         findings=read_json(output/'findings.json',[])
         st.json(findings[:100] if isinstance(findings,list) else {k:v[:100] if isinstance(v,list) else v for k,v in findings.items()})

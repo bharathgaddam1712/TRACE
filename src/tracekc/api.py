@@ -18,6 +18,7 @@ from tracekc.config import PROJECT_ROOT, load_env, load_config
 from tracekc.label import load_mapping
 from tracekc.forecast import timestamp
 from tracekc.graph_algorithms import GraphIndex
+from tracekc.triage import TriagePipeline,TriageRequest,TriageReview
 
 
 class Store:
@@ -65,6 +66,7 @@ def create_app(out_dir: Path, ai_service=None) -> FastAPI:
     store = Store(out_dir)
     cases = Cases(out_dir)
     ai = ai_service or SarvamService(out_dir)
+    triage = TriagePipeline(out_dir,ai)
     mapping = load_mapping(PROJECT_ROOT / 'configs' / 'attack_mapping.yaml')
     graph_settings=load_config().get('graph',{})
     max_depth=min(12,max(1,int(graph_settings.get('max_depth',6))))
@@ -271,6 +273,19 @@ def create_app(out_dir: Path, ai_service=None) -> FastAPI:
     @app.get('/ai/status')
     def ai_status():
         return ai.status()
+
+    @app.get('/incidents/{inc_id}/triage')
+    def get_triage(inc_id:int):
+        return triage.latest(fingerprint(get(inc_id)))
+
+    @app.post('/incidents/{inc_id}/triage')
+    def run_triage(inc_id:int,request:TriageRequest):
+        return triage.run(get(inc_id),request,mapping)
+
+    @app.post('/incidents/{inc_id}/triage/review')
+    def review_triage(inc_id:int,review:TriageReview):
+        try:return triage.review(fingerprint(get(inc_id)),review)
+        except ValueError as exc:raise HTTPException(409,str(exc)) from None
 
     @app.post('/incidents/{inc_id}/ai')
     def analyze(inc_id: int, request: AIRequest):
