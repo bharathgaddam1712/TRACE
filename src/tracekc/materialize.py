@@ -11,14 +11,26 @@ from __future__ import annotations
 
 import json
 import re
+import hashlib
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 from tracekc.correlate import evidence_dict
 from tracekc.engine import dicts, run
 from tracekc.sigma import lit
+from tracekc.config import project_path
+from tracekc.forecast import predict
+from tracekc.graph_algorithms import GraphIndex, signal_similarity
+from tracekc.relationships import related_incidents
 
 MAX_FINDINGS_JSON = 2000
+
+
+def write_json(path: Path, value) -> None:
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    temporary.write_text(json.dumps(value, indent=1, default=str), encoding='utf-8')
+    os.replace(temporary, path)
 
 
 def iso(ms: int | None) -> str | None:
@@ -44,32 +56,15 @@ def _host_role(host: str) -> str:
     return "workstation"
 
 
-def _link(prev: dict, cur: dict, ext_ips: set[str]) -> tuple[list[str], str]:
-    reasons, observed = [], False
-    if cur["user_name"] and cur["user_name"] == prev["user_name"]:
-        reasons.append(f"same account {cur['user_name']}")
-    if cur["host"] == prev["host"]:
-        reasons.append(f"same host {cur['host']}")
-        observed = observed or (cur["user_name"] == prev["user_name"])
-    if cur["src_host"] and cur["src_host"] == prev["host"] and cur["host"] != prev["host"]:
-        reasons.append(f"logon from {prev['host']} to {cur['host']}")
-        observed = True
-    if prev["dst_host"] and prev["dst_host"] == cur["host"] and cur["host"] != prev["host"]:
-        reasons.append(f"{prev['host']} connected to {cur['host']}")
-        observed = True
-    shared_ext = ({prev["src_ip"], prev["dst_ip"]} & {cur["src_ip"], cur["dst_ip"]}) & ext_ips
-    for ip in sorted(shared_ext):
-        reasons.append(f"same external address {ip}")
-        observed = True
-    return reasons, "observed" if observed else "inferred"
-
-
 def _step(k: int, s: dict, n_ids: int) -> dict:
     return {
         "step": k, "signal_id": s["signal_id"], "ts": iso(s["ts_first_ms"]), "ts_last": iso(s["ts_last_ms"]),
         "title": s["title"], "technique": s["technique"], "technique_name": s["technique_name"],
+        'source_technique':s['source_technique'],
+        "technique_ids": sorted(set(s.get('techniques') or []) | ({s['technique']} if s['technique'] else set())),
         "tactic": s["tactic_name"], "kill_chain_stage": s["kill_chain_stage"], "lockheed_phase": s["lockheed_phase"],
         "mapping_source": s["mapping_source"], "mapping_version": s["mapping_version"], "severity": s["severity"],
+        'mapping_reason': s['mapping_reason'],
         "host": s["host"], "user": s["user_name"], "src_ip": s["src_ip"], "src_host": s["src_host"],
         "dst_ip": s["dst_ip"], "dst_host": s["dst_host"], "dst_domain": s["dst_domain"],
         "merged_detections": s["n_detections"], "event_count": s["n_events"],
@@ -79,26 +74,47 @@ def _step(k: int, s: dict, n_ids: int) -> dict:
     }
 
 
-def _graph(sigs: list[dict], ext_ips: set[str], reach: dict) -> dict:
+def _graph(sigs: list[dict], ext_ips: set[str], reach: dict, links=()) -> dict:
     nodes, edges = {}, {}
 
     def node(nid, label, ntype, **kw):
         nodes.setdefault(nid, {"id": nid, "label": label, "type": ntype, **kw})
 
     def edge(a, b, kind, step, technique):
-        e = edges.setdefault((a, b, kind), {"source": a, "target": b, "kind": kind, "steps": [], "techniques": []})
+        e = edges.setdefault((a, b, kind), {"source": a, "target": b, "kind": kind, "steps": [], "techniques": [],
+                                           "event_ids": [], "evidence_kind": "observed_association"})
         e["steps"].append(step)
+        e['event_ids'] = sorted(set(e['event_ids']) | set(sigs[step - 1]['event_ids'] or []))[:100]
+        e['first_seen'] = iso(min(sigs[x - 1]['ts_first_ms'] for x in e['steps']))
+        e['last_seen'] = iso(max(sigs[x - 1]['ts_last_ms'] for x in e['steps']))
         if technique and technique not in e["techniques"]:
             e["techniques"].append(technique)
 
     for k, s in enumerate(sigs, start=1):
         h = f"host:{s['host']}"
-        node(h, s["host"], "host", role=_host_role(s["host"]), compromised=True)
+        node(h, s["host"], "host", role=_host_role(s["host"]), suspected=True)
+        event_node = f"signal:{s['signal_id']}"
+        node(event_node, f"Step {k}: {s['title']}", 'event', steps=[k], event_ids=list(s['event_ids'] or [])[:20])
+        edge(h, event_node, 'observed_on', k, s['technique'])
+        evidence = evidence_dict(s['evidence'])
+        process_key = evidence.get('process_entity_id')
+        if process_key:
+            pid = f"process:{s['host']}:{process_key}"
+            node(pid, evidence.get('process_name') or 'process', 'process', identity=process_key)
+            edge(h, pid, 'ran', k, s['technique'])
+            edge(pid, event_node, 'generated', k, s['technique'])
+        for field, ntype, relation in [('file', 'file', 'touched'), ('dns', 'domain', 'queried'),
+                                        ('dst_domain', 'domain', 'contacted'), ('registry', 'registry', 'modified')]:
+            value = evidence.get(field)
+            if value:
+                nid = f"{ntype}:{value}"
+                node(nid, value, ntype)
+                edge(event_node, nid, relation, k, s['technique'])
         if s["user_name"]:
             node(f"user:{s['user_name']}", s["user_name"], "user")
             edge(f"user:{s['user_name']}", h, "acted_on", k, s["technique"])
         if s["src_host"] and s["src_host"] != s["host"]:
-            node(f"host:{s['src_host']}", s["src_host"], "host", role=_host_role(s["src_host"]), compromised=True)
+            node(f"host:{s['src_host']}", s["src_host"], "host", role=_host_role(s["src_host"]), suspected=True)
             edge(f"host:{s['src_host']}", h, "lateral", k, s["technique"])
         if s["src_ip"] in ext_ips:
             node(f"ip:{s['src_ip']}", s["src_ip"], "external")
@@ -107,17 +123,27 @@ def _graph(sigs: list[dict], ext_ips: set[str], reach: dict) -> dict:
             node(f"ip:{s['dst_ip']}", s["dst_domain"] or s["dst_ip"], "external")
             edge(h, f"ip:{s['dst_ip']}", "outbound", k, s["technique"])
         elif s["dst_host"] and s["dst_host"] != s["host"]:
-            node(f"host:{s['dst_host']}", s["dst_host"], "host", role=_host_role(s["dst_host"]), compromised=True)
+            node(f"host:{s['dst_host']}", s["dst_host"], "host", role=_host_role(s["dst_host"]), suspected=True)
             edge(h, f"host:{s['dst_host']}", "connected", k, s["technique"])
     for r in reach.get("reachable", []):
         nid = f"host:{r['asset']}"
         node(nid, r["asset"], "host", role=_host_role(r["asset"]), compromised=False, potential=True)
-        via = r["via"].split()[-1]
-        src = f"user:{via}" if r["relation"] in ("CanLogon", "AdminTo") else f"host:{via}"
+        via = r['via_entity']
+        src = f"{via['type']}:{via['id']}"
         if src in nodes:
             edges.setdefault((src, nid, "could_reach"), {"source": src, "target": nid, "kind": "could_reach",
-                                                         "relation": r["relation"], "confidence": r["confidence"]})
-    return {"nodes": list(nodes.values()), "edges": list(edges.values())}
+                                                         "relation": r["relation"], "confidence": r["confidence"],
+                                                         "evidence_kind": "hypothesis", "event_ids": r['evidence']['event_ids']})
+    for link in links:
+        left, right = sigs[link['from_step']-1], sigs[link['to_step']-1]
+        edges[(left['signal_id'],right['signal_id'],link['relation'])] = {
+            'source':f"signal:{left['signal_id']}", 'target':f"signal:{right['signal_id']}",
+            'kind':'correlates_with', 'relation':link['relation'],
+            'steps':[link['from_step'],link['to_step']], 'event_ids':link['event_ids'],
+            'evidence_kind':link['kind'], 'similarity':link['similarity'],
+            'cost':1.0 if link['kind']=='observed' else 1/max(link['similarity'],0.05)}
+    indexed = GraphIndex({'nodes':list(nodes.values()),'edges':list(edges.values())})
+    return {'nodes':list(indexed.nodes.values()),'edges':list(indexed.edges.values())}
 
 
 def _host_path(sigs: list[dict]) -> list[str]:
@@ -156,28 +182,39 @@ def _narrative(inc: dict) -> str:
     return "\n".join(lines)
 
 
-def materialize(con, cfg: dict, out_dir: Path, promoted, isolated, graph) -> dict:
+def materialize(con, cfg: dict, out_dir: Path, promoted, isolated, graph, correlation_edges=()) -> dict:
     inc_dir = out_dir / "incidents"
     inc_dir.mkdir(parents=True, exist_ok=True)
-    for old in inc_dir.glob("*.json"):
-        old.unlink()
     n_ids = int(cfg["output"]["evidence_events_in_json"])
     host_ips = {r[0] for r in run(con, "SELECT ip FROM ip_host")}
     index = []
+    lookahead_events = set()
+    model_path = cfg.get('forecast', {}).get('model_path')
+    forecast_model = json.loads(project_path(cfg, model_path).read_text(encoding='utf-8-sig')) if model_path else None
     for inc_id, (score, detail, sigs) in enumerate(promoted, start=1):
         ext_ips = {ip for s in sigs for ip in (s["src_ip"], s["dst_ip"]) if _is_external(ip, host_ips)}
         steps = [_step(k, s, n_ids) for k, s in enumerate(sigs, start=1)]
-        for i in range(1, len(sigs)):
-            for j in range(i - 1, -1, -1):  # nearest earlier step that shares an entity
-                reasons, kind = _link(sigs[j], sigs[i], ext_ips)
-                if reasons:
-                    steps[i]["link"] = {"from_step": j + 1, "reasons": reasons, "kind": kind}
-                    break
-            else:
-                steps[i]["link"] = {"from_step": i, "reasons": ["time adjacency only"], "kind": "inferred"}
+        step_lookup = {s['signal_id']: k for k, s in enumerate(sigs, 1)}
+        links = []
+        for a, b, relation in correlation_edges:
+            if a not in step_lookup or b not in step_lookup:
+                continue
+            left, right = sorted([step_lookup[a], step_lookup[b]])
+            links.append({'from_step': left, 'to_step': right, 'relation': relation,
+                          'similarity': round(signal_similarity(sigs[left-1],sigs[right-1]),4),
+                          'kind': 'observed' if relation in {'lateral', 'process_entity'} else 'inferred',
+                          'reasons': [f'{relation} correlation; association does not establish causation'],
+                          'event_ids': sorted(set(steps[left-1]['event_ids'] + steps[right-1]['event_ids']))})
+        for step in steps:
+            incoming = [link for link in links if link['to_step'] == step['step']]
+            step['links'] = incoming
+            if incoming:
+                step['link'] = max(incoming, key=lambda link: (link['kind'] == 'observed', link['from_step']))
         users = sorted({s["user_name"] for s in sigs if s["user_name"]})
         hosts = sorted({h for s in sigs for h in (s["host"], s["src_host"], s["dst_host"]) if h})
-        reach = graph.lookahead(set(users), set(hosts))
+        cutoff = max(s['ts_last_ms'] for s in sigs)
+        reach = graph.lookahead(set(users), set(hosts), as_of_ms=cutoff)
+        lookahead_events.update(eid for candidate in reach['reachable'] for eid in candidate['evidence']['event_ids'])
         path = _host_path(sigs)
         tactics = []
         for s in sigs:
@@ -185,6 +222,9 @@ def materialize(con, cfg: dict, out_dir: Path, promoted, isolated, graph) -> dic
                 tactics.append(s["tactic_name"])
         inc = {
             "id": inc_id, "score": score,
+            "fingerprint": hashlib.sha256('|'.join(sorted({eid for s in sigs for eid in (s['event_ids'] or [])})).encode()).hexdigest(),
+            "score_interpretation": "heuristic priority score, not a probability",
+            "correlation_links": links,
             "title": f"{tactics[0] if tactics else 'Suspicious activity'} -> {tactics[-1] if tactics else ''} "
                      f"on {' -> '.join(path)}".replace(" ->  on", " on"),
             "first_seen": iso(sigs[0]["ts_first_ms"]), "last_seen": iso(max(s["ts_last_ms"] for s in sigs)),
@@ -199,13 +239,14 @@ def materialize(con, cfg: dict, out_dir: Path, promoted, isolated, graph) -> dic
             "attribution": sorted({a for s in sigs for a in (s["authors"] or []) if a}),
         }
         inc["techniques"] = [{"id": t, "name": n, "tactic": tac} for t, n, tac in inc["techniques"]]
-        inc["graph"] = _graph(sigs, ext_ips, reach)
+        inc['forecast'] = predict(forecast_model, sigs[-1]['technique'], inc['first_seen'], [s['technique'] for s in sigs if s['technique']])
+        inc["graph"] = _graph(sigs, ext_ips, reach, links)
         inc["narrative"] = _narrative(inc)
-        (inc_dir / f"{inc_id}.json").write_text(json.dumps(inc, indent=1, default=str))
+        write_json(inc_dir / f"{inc_id}.json", inc)
         index.append({k: inc[k] for k in ("id", "title", "score", "first_seen", "last_seen", "tactics",
                                           "merged_alert_count", "signal_count", "host_path_text")}
-                     | {"users": users, "hosts": hosts})
-    (out_dir / "index.json").write_text(json.dumps(index, indent=1))
+                     | {"users": users, "hosts": hosts, "fingerprint": inc['fingerprint'], 'entities':inc['entities'],
+                        'technique_ids':sorted({t for step in steps for t in step['technique_ids']})})
     findings = []
     for score, detail, sigs in isolated:
         for s in sigs:
@@ -214,13 +255,21 @@ def materialize(con, cfg: dict, out_dir: Path, promoted, isolated, graph) -> dic
                 break
         if len(findings) >= MAX_FINDINGS_JSON:
             break
-    (out_dir / "findings.json").write_text(json.dumps(
-        {"total_isolated_signals": sum(len(g[2]) for g in isolated), "shown": len(findings), "findings": findings},
-        indent=1, default=str))
+    write_json(out_dir / 'findings.json',
+        {"total_isolated_signals": sum(len(g[2]) for g in isolated), "shown": len(findings), "findings": findings})
     suppressed = dicts(con, "SELECT signal_id, title, technique, host, user_name, suppressed_reason, n_detections "
                             "FROM signals WHERE suppressed_reason IS NOT NULL")
     (out_dir / "suppressed.json").write_text(json.dumps(suppressed, indent=1, default=str))
     run(con, f"COPY signals TO {lit(out_dir / 'signals.parquet')} (FORMAT parquet)")
     run(con, f"COPY step_index TO {lit(out_dir / 'step_index.parquet')} (FORMAT parquet)")
+    run(con, 'CREATE OR REPLACE TEMP TABLE reach_evidence (event_id VARCHAR)')
+    if lookahead_events:
+        con.executemany('INSERT INTO reach_evidence VALUES (?)', [(eid,) for eid in sorted(lookahead_events)])
+    run(con, f"COPY (SELECT * FROM events WHERE event_id IN "
+             f"(SELECT unnest(event_ids) FROM signals UNION SELECT event_id FROM reach_evidence)) "
+             f"TO {lit(out_dir / 'evidence.parquet')} (FORMAT parquet, COMPRESSION zstd)")
+    profiles=[{**row,'timeline':[{'technique_ids':row['technique_ids']}]} for row in index]
+    write_json(out_dir / 'relationships.json', related_incidents(profiles,cfg.get('relationships',{})))
+    write_json(out_dir / 'index.json', index)  # publish after all incident files exist
     return {"incidents": len(index), "isolated_groups": len(isolated),
             "isolated_signals": sum(len(g[2]) for g in isolated)}

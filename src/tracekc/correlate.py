@@ -20,10 +20,10 @@ from tracekc.sigma import lit
 
 log = logging.getLogger(__name__)
 
-SIGNAL_COLS = ("signal_id, sig_key, host, user_name, src_ip, dst_ip, dst_domain, src_host, dst_host, technique, "
+SIGNAL_COLS = ("signal_id, sig_key, host, user_name, src_ip, dst_ip, dst_domain, src_host, dst_host, technique, source_technique, techniques, "
                "technique_name, tactic, tactic_name, tactic_order, kill_chain_stage, lockheed_phase, mapping_source, "
-               "mapping_version, title, severity, ts_first_ms, ts_last_ms, n_detections, n_events, rule_ids, "
-               "rule_sources, authors, event_ids, vendor_corroborated, evidence, procs, recurrence, recurrent")
+               "mapping_version, mapping_reason, title, severity, ts_first_ms, ts_last_ms, n_detections, n_events, rule_ids, "
+               "rule_sources, authors, event_ids, vendor_corroborated, evidence, procs, process_keys, recurrence, recurrent")
 
 
 def build_signals(con, cfg: dict, suppressions: list[dict]) -> dict:
@@ -59,10 +59,13 @@ def build_signals(con, cfg: dict, suppressions: list[dict]) -> dict:
                any_value(dst_ip) AS dst_ip, any_value(dst_domain) AS dst_domain,
                any_value(src_host) AS src_host, any_value(dst_host) AS dst_host,
                arg_max(technique, severity) AS technique, arg_max(technique_name, severity) AS technique_name,
+               arg_max(source_technique,severity) AS source_technique,
+               list_distinct(flatten(list(techniques))) AS techniques,
                arg_max(tactic, severity) AS tactic, arg_max(tactic_name, severity) AS tactic_name,
                arg_max(tactic_order, severity) AS tactic_order, arg_max(kill_chain_stage, severity) AS kill_chain_stage,
                arg_max(lockheed_phase, severity) AS lockheed_phase, arg_max(mapping_source, severity) AS mapping_source,
                any_value(mapping_version) AS mapping_version, arg_max(rule_title, severity) AS title,
+               arg_max(mapping_reason, severity) AS mapping_reason,
                max(severity) AS severity, min(ts_first_ms) AS ts_first_ms, max(ts_last_ms) AS ts_last_ms,
                count(*) AS n_detections, sum(event_count)::BIGINT AS n_events,
                list(DISTINCT rule_id ORDER BY rule_id) AS rule_ids,
@@ -74,6 +77,8 @@ def build_signals(con, cfg: dict, suppressions: list[dict]) -> dict:
                fingerprint,
                list(DISTINCT proc_name ORDER BY proc_name) FILTER (WHERE proc_name IS NOT NULL) AS procs,
                list(DISTINCT proc_pid ORDER BY proc_pid) FILTER (WHERE proc_pid IS NOT NULL) AS pids,
+               list(DISTINCT json_extract_string(evidence, '$.process_entity_id'))
+                 FILTER (WHERE json_extract_string(evidence, '$.process_entity_id') IS NOT NULL) AS process_keys,
                NULL::VARCHAR AS suppressed_reason
         FROM s GROUP BY {part}, sess""")
     keymap = {"rule_id": "list_contains(rule_ids, {v})", "technique": "technique = {v}",
@@ -125,8 +130,8 @@ def link_edges(con, cfg: dict) -> list[tuple[int, int, str]]:
           SELECT signal_id, 'ip', unnest(list_distinct([src_ip, dst_ip])), ts_first_ms, user_name, host
           FROM linkable
           UNION ALL
-          SELECT signal_id, 'proc', host || ':' || CAST(pid AS VARCHAR), ts_first_ms, user_name, host
-          FROM (SELECT signal_id, host, unnest(pids) AS pid, ts_first_ms, user_name FROM linkable))
+          SELECT signal_id, 'process_entity', host || ':' || identity, ts_first_ms, user_name, host
+          FROM (SELECT signal_id, host, unnest(process_keys) AS identity, ts_first_ms, user_name FROM linkable))
         WHERE pkey IS NOT NULL AND (ptype <> 'ip' OR NOT is_internal(pkey))""")
     run(con, f"""
         CREATE OR REPLACE TABLE pivot_sessions AS
@@ -158,7 +163,15 @@ def link_edges(con, cfg: dict) -> list[tuple[int, int, str]]:
         SELECT l.signal_id, c.signal_id, 'lateral' FROM lat l ASOF JOIN cand c
           ON l.host = c.host AND l.user_name = c.user_name AND l.ts_first_ms <= c.ts_first_ms
         WHERE c.ts_first_ms - l.ts_first_ms <= {gap}""")
-    return [(int(a), int(b), p) for a, b, p in rows if a != b]
+    from tracekc.graph_algorithms import signal_similarity
+    signals = {s['signal_id']: s for s in dicts(con, 'SELECT signal_id, host, user_name, src_ip, dst_ip, technique, process_keys FROM linkable')}
+    threshold = float(c.get('similarity_threshold', 0.3))
+    accepted=[]
+    for a,b,relation in rows:
+        if a == b: continue
+        if relation in {'lateral','process_entity'} or signal_similarity(signals[a],signals[b]) >= threshold:
+            accepted.append((int(a),int(b),relation))
+    return sorted(set(accepted))
 
 
 class _UF:
@@ -193,17 +206,28 @@ def _longest_progression(orders: list[int]) -> int:
 
 
 def _split_oversized(group: list[dict], c: dict) -> list[list[dict]]:
-    hosts = {s["host"] for s in group}
-    if len(group) <= c["max_incident_signals"] and len(hosts) <= c["max_incident_hosts"]:
-        return [group]
-    by_user: dict[str, list[dict]] = defaultdict(list)
-    orphans = []
-    for s in group:
-        (by_user[s["user_name"]] if s["user_name"] else orphans).append(s)
-    for s in orphans:  # attach user-less signals to the user group most active on the same host
-        best = max(by_user, key=lambda u: sum(x["host"] == s["host"] for x in by_user[u]), default=None)
-        by_user[best if best is not None else "_none"].append(s)
-    return list(by_user.values())
+    """Linear-time orphan assignment followed by hard signal/host bounds."""
+    max_signals=int(c['max_incident_signals']);max_hosts=int(c['max_incident_hosts'])
+    if len(group)<=max_signals and len({s['host'] for s in group})<=max_hosts:return [group]
+    by_user=defaultdict(list);owners=defaultdict(lambda:defaultdict(int));orphans=[]
+    for signal in group:
+        if signal['user_name']:
+            by_user[signal['user_name']].append(signal);owners[signal['host']][signal['user_name']]+=1
+        else:orphans.append(signal)
+    for signal in orphans:
+        known=owners.get(signal['host'],{})
+        owner=max(known,key=lambda user:(known[user],user)) if known else '_host:'+str(signal['host'])
+        by_user[owner].append(signal)
+    result=[]
+    for signals in by_user.values():
+        current=[];hosts=set()
+        for signal in sorted(signals,key=lambda item:(item['ts_first_ms'],item['signal_id'])):
+            involved={signal['host']}
+            if current and (len(current)>=max_signals or len(hosts|involved)>max_hosts):
+                result.append(current);current=[];hosts=set()
+            current.append(signal);hosts.update(involved)
+        if current:result.append(current)
+    return result
 
 
 def score_incident(signals: list[dict], p: dict) -> tuple[bool, float, dict]:

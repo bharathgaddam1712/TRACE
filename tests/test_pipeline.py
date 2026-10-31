@@ -43,7 +43,11 @@ def test_planted_chain_rebuilt_in_order_inside_dense_noise(dense):
     assert [s["technique"] for s in inc["timeline"]] == ["T1110", "T1059.001", "T1547.001", "T1071.001",
                                                          "T1021.001", "T1048"]
     assert inc["host_path"] == ["WS-HR-012", "SRV-FILE-01"]
-    assert all(s["link"]["kind"] == "observed" for s in inc["timeline"][1:])
+    # Shared entities establish association; only specific process/logon evidence is observed.
+    assert all(s['links'] for s in inc['timeline'][1:])
+    assert all(link['event_ids'] for link in inc['correlation_links'])
+    assert all(link['kind'] == ('observed' if link['relation'] in {'lateral', 'process_entity'} else 'inferred')
+               for link in inc['correlation_links'])
     assert inc["lookahead"]["status"] == "evidenced"
 
 

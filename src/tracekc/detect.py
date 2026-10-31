@@ -12,7 +12,8 @@ from __future__ import annotations
 import logging
 
 from tracekc.engine import one, run
-from tracekc.sigma import ENTITY_COLS, Rule, emitting_rule_ids, lit, relation_sql
+from tracekc.sigma import ENTITY_COLS, LOGSOURCE, Rule, emitting_rule_ids, lit, relation_sql
+import re
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +21,9 @@ ENT = ", ".join(ENTITY_COLS)
 
 EVIDENCE_SQL = """to_json({
   'action': action, 'outcome': outcome, 'logon_type': logon_type, 'cmd': proc_cmd, 'parent': parent_name,
+  'process_entity_id': proc_entity_id, 'process_pid': proc_pid, 'parent_entity_id': parent_entity_id,
+  'parent_pid': parent_pid, 'process_name': proc_name,
+  'message': message, 'dataset': dataset, 'vendor_rule': vendor_rule_name,
   'exe': proc_exe, 'registry': reg_path, 'registry_data': reg_data, 'file': file_path, 'dns': dns_name,
   'dst_domain': dst_domain, 'dst_port': dst_port, 'bytes': net_bytes, 'failed_count': failed_count,
   'renamed_count': renamed_count, 'win_event_id': win_event_id, 'src_file': src_file})::VARCHAR"""
@@ -42,26 +46,52 @@ def _register_rules(con, rules: dict[str, Rule]) -> None:
     run(con, """CREATE OR REPLACE TABLE rules_meta (rule_id VARCHAR, title VARCHAR, kind VARCHAR,
                 technique VARCHAR, techniques VARCHAR[], tactic_hint VARCHAR, severity INTEGER,
                 author VARCHAR, emit BOOLEAN)""")
-    for r in rules.values():
-        run(con, "INSERT INTO rules_meta VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [r.id, r.title, r.kind, r.techniques[0] if r.techniques else None, r.techniques,
-             r.tactic_hint, r.severity, r.author, r.id in emit])
+    if rules:
+        run(con,'BEGIN TRANSACTION')
+        try:
+            con.executemany('INSERT INTO rules_meta VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [[r.id,r.title,r.kind,r.techniques[0] if r.techniques else None,r.techniques,r.tactic_hint,r.severity,r.author,r.id in emit] for r in rules.values()])
+            run(con,'COMMIT')
+        except Exception:
+            run(con,'ROLLBACK')
+            raise
 
 
-def _rule_hits(con, rules: dict[str, Rule]) -> int:
+def _rule_hits(con, rules: dict[str, Rule], batch_size: int = 16) -> int:
     base = [r for r in rules.values() if r.kind == "base"]
+    actions={row[0] for row in run(con,'SELECT DISTINCT action FROM ev')}
+    os_types={row[0] for row in run(con,'SELECT DISTINCT os_type FROM ev WHERE os_type IS NOT NULL')}
+    has_windows='windows' in os_types or one(con,'SELECT count(*) FROM ev WHERE win_event_id IS NOT NULL')[0]>0
+    def applicable(rule):
+        if rule.logsource.get('product')=='windows' and not has_windows:return False
+        if rule.logsource.get('product')=='linux' and 'linux' not in os_types:return False
+        scope=LOGSOURCE.get(('category',rule.logsource.get('category','')))
+        matched=re.fullmatch(r"action = '([^']+)'",scope or '')
+        return not matched or matched.group(1) in actions
+    base=[r for r in base if applicable(r)]
+    run(con,'CREATE OR REPLACE TABLE evaluated_rules (rule_id VARCHAR)')
+    if base:
+        con.executemany('INSERT INTO evaluated_rules VALUES (?)',[(r.id,) for r in base])
     if not base:
         run(con, f"CREATE OR REPLACE TABLE rule_hits AS SELECT event_id, ts_ms, {ENT}, "
                  f"NULL::VARCHAR AS evidence, []::VARCHAR[] AS hits FROM ev WHERE FALSE")
         return 0
-    cases = ",\n      ".join(f"CASE WHEN {r.where} THEN {lit(r.id)} END" for r in base)
-    any_match = "\n   OR ".join(f"({r.where})" for r in base)
-    run(con, f"""
-        CREATE OR REPLACE TABLE rule_hits AS
-        SELECT event_id, ts_ms, {ENT}, {EVIDENCE_SQL} AS evidence,
-               list_distinct([{cases}]) AS hits
-        FROM ev
-        WHERE {any_match}""")
+    # Bound SQL planner memory and compilation time as community coverage grows.
+    run(con, f"CREATE OR REPLACE TABLE raw_rule_hits AS SELECT event_id, ts_ms, {ENT}, "
+             f"NULL::VARCHAR AS evidence, []::VARCHAR[] AS hits FROM ev WHERE FALSE")
+    base.sort(key=lambda rule:(str(rule.logsource),rule.id))
+    for offset in range(0,len(base),batch_size):
+        batch=base[offset:offset+batch_size]
+        cases = ",\n      ".join(f"CASE WHEN {r.where} THEN {lit(r.id)} END" for r in batch)
+        any_match = "\n   OR ".join(f"({r.where})" for r in batch)
+        run(con, f"""INSERT INTO raw_rule_hits
+            SELECT event_id,ts_ms,{ENT},{EVIDENCE_SQL} AS evidence,list_distinct([{cases}]) AS hits
+            FROM ev WHERE {any_match}""")
+    run(con, f"""CREATE OR REPLACE TABLE rule_hits AS
+        SELECT event_id,any_value(ts_ms) AS ts_ms,
+               {', '.join(f'any_value({column}) AS {column}' for column in ENTITY_COLS)},
+               any_value(evidence) AS evidence,list_distinct(flatten(list(hits))) AS hits
+        FROM raw_rule_hits GROUP BY event_id""")
     return one(con, "SELECT count(*) FROM rule_hits")[0]
 
 
@@ -70,11 +100,12 @@ def _single_event_detections(con) -> None:
         INSERT INTO detections
         SELECT * FROM (
           WITH x AS (SELECT event_id, unnest(hits) AS rule_id FROM rule_hits),
-          m AS (SELECT x.event_id, r.rule_id, r.severity FROM x JOIN rules_meta r USING (rule_id) WHERE r.emit),
-          agg AS (SELECT event_id, arg_max(rule_id, severity) AS rule_id,
-                         list(rule_id ORDER BY severity DESC, rule_id) AS rule_ids, max(severity) AS severity
+          m AS (SELECT x.event_id, r.rule_id, r.severity, r.techniques FROM x JOIN rules_meta r USING (rule_id) WHERE r.emit),
+          agg AS (SELECT event_id, arg_max(rule_id, (starts_with(rule_id,'trace-'),severity,rule_id)) AS rule_id,
+                         list(rule_id ORDER BY severity DESC, rule_id) AS rule_ids, max(severity) AS severity,
+                         list_distinct(flatten(list(techniques))) AS techniques
                   FROM m GROUP BY event_id)
-          SELECT md5('ev|' || h.event_id), a.rule_id, a.rule_ids, r.title, 'sigma', r.technique, r.techniques,
+          SELECT md5('ev|' || h.event_id), a.rule_id, a.rule_ids, r.title, 'sigma', r.technique, a.techniques,
                  r.tactic_hint, a.severity, r.author, h.ts_ms, h.ts_ms, {", ".join("h." + c for c in ENTITY_COLS)},
                  1, [h.event_id], h.evidence, FALSE
           FROM agg a JOIN rules_meta r USING (rule_id) JOIN rule_hits h USING (event_id))""")
@@ -161,17 +192,24 @@ def _volume(con, c: dict, cap: int) -> None:
             GROUP BY host, dst_ip, bucket),
           pop AS (SELECT dst_ip, count(DISTINCT host) AS hosts FROM f GROUP BY dst_ip),
           st AS (SELECT median(total) AS med FROM f),
-          mad AS (SELECT median(abs(total - st.med)) AS mad FROM f, st)
+          mad AS (SELECT median(abs(total - st.med)) AS mad FROM f, st),
+          hs AS (SELECT host, median(total) AS med, count(*) AS samples FROM f GROUP BY host),
+          hm AS (SELECT f.host, median(abs(f.total - hs.med)) AS mad FROM f JOIN hs USING (host) GROUP BY f.host),
+          baseline AS (SELECT hs.host,
+            CASE WHEN samples >= 5 THEN hs.med ELSE st.med END AS med,
+            CASE WHEN samples >= 5 THEN hm.mad ELSE mad.mad END AS mad,
+            CASE WHEN samples >= 5 THEN 'host' ELSE 'fleet_fallback' END AS scope
+            FROM hs JOIN hm USING (host), st, mad)
           SELECT md5('vol|' || f.host || '|' || f.dst_ip || '|' || f.bucket), 'trace-outbound-volume',
                  ['trace-outbound-volume'], 'Unusually large outbound transfer to a rare external destination',
                  'builtin', {lit(c['technique'])}, [{lit(c['technique'])}], 'exfiltration', 50, 'TRACE builtin',
                  f.t0, f.t1, f.host, f.user_name, f.src_ip, f.dst_ip, f.src_host, f.dst_host, f.dst_domain,
                  f.proc_name, f.proc_pid, f.n, f.ids,
-                 to_json({{'bytes_total': f.total, 'connections': f.n, 'threshold_bytes':
-                           greatest({int(c['min_bytes'])}, st.med + {float(c['mad_k'])} * mad.mad)}})::VARCHAR, FALSE
-          FROM f JOIN pop USING (dst_ip), st, mad
+                 to_json({{'bytes_total': f.total, 'connections': f.n, 'baseline_scope': baseline.scope, 'threshold_bytes':
+                           greatest({int(c['min_bytes'])}, baseline.med + {float(c['mad_k'])} * baseline.mad)}})::VARCHAR, FALSE
+          FROM f JOIN pop USING (dst_ip) JOIN baseline USING (host)
           WHERE pop.hosts <= 3 AND f.total >= {int(c['min_bytes'])}
-            AND f.total > st.med + {float(c['mad_k'])} * mad.mad)""")
+            AND f.total > baseline.med + {float(c['mad_k'])} * baseline.mad)""")
 
 
 def _rarity(con, c: dict) -> None:
@@ -197,7 +235,7 @@ def detect(con, cfg: dict, rules: dict[str, Rule]) -> dict:
     cap = int(d["max_event_ids"])
     run(con, DETECTIONS_DDL)
     _register_rules(con, rules)
-    hits = _rule_hits(con, rules)
+    hits = _rule_hits(con, rules, max(1,min(128,int(d.get('rules_sql_batch_size',16)))))
     _single_event_detections(con)
     _correlation_detections(con, rules, cap)
     _vendor_detections(con, bool(d.get("use_vendor_alerts", True)))
@@ -210,4 +248,7 @@ def detect(con, cfg: dict, rules: dict[str, Rule]) -> dict:
     by_source = dict(run(con, "SELECT rule_source, count(*) FROM detections GROUP BY 1 ORDER BY 1"))
     by_rule = dict(run(con, "SELECT rule_id, count(*) FROM detections GROUP BY 1 ORDER BY 2 DESC"))
     log.info("detections by source: %s", by_source)
-    return {"rule_hit_events": hits, "detections_by_source": by_source, "detections_by_rule": by_rule}
+    return {"rule_hit_events": hits, "detections_by_source": by_source, "detections_by_rule": by_rule,
+            'base_rules_evaluated':one(con,'SELECT count(*) FROM evaluated_rules')[0],
+            'base_rules_loaded':sum(r.kind=='base' for r in rules.values()),
+            'applicability_note':'Rules for absent declared event actions are pruned; other rules are still evaluated.'}

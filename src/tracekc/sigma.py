@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from functools import lru_cache
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -25,6 +26,7 @@ LEVELS = {"informational": 10, "low": 25, "medium": 50, "high": 75, "critical": 
 FIELD_MAP = {
     "event.action": "action", "event.outcome": "outcome", "event.kind": "kind",
     "event.dataset": "dataset", "event.category": "category",
+    "message": "message", "rule.name": "vendor_rule_name", "rule.id": "vendor_rule_id",
     "host.name": "host", "host.hostname": "host", "Computer": "host",
     "user.name": "user_name", "user.domain": "user_domain", "User": "user_name", "TargetUserName": "user_name",
     "source.ip": "src_ip", "source.port": "src_port", "IpAddress": "src_ip", "SourceIp": "src_ip",
@@ -60,11 +62,11 @@ LOGSOURCE = {
     ("category", "file_event"): "category = 'file'",
     ("category", "file_rename"): "action = 'file_rename'",
     ("category", "authentication"): "action = 'user_logon'",
-    ("product", "windows"): None,
-    ("product", "linux"): None,
+    ("product", "windows"): "(os_type = 'windows' OR win_event_id IS NOT NULL)",
+    ("product", "linux"): "os_type = 'linux'",
     ("service", "security"): None,
 }
-SUPPORTED_MODS = {"contains", "startswith", "endswith", "all", "re", "cidr", "gt", "gte", "lt", "lte"}
+SUPPORTED_MODS = {"contains", "startswith", "endswith", "all", "re", "cidr", "gt", "gte", "lt", "lte", 'exists', 'fieldref'}
 
 
 class SigmaError(ValueError):
@@ -85,6 +87,7 @@ class Rule:
     where: str | None = None       # base rules
     corr: dict = field(default_factory=dict)
     always_emit: bool = False
+    logsource: dict = field(default_factory=dict)
 
 
 def lit(value) -> str:
@@ -128,6 +131,7 @@ def _value_sql(col: str, mods: list[str], value) -> str:
             raise SigmaError(f"field {col} is numeric, got {value!r}") from None
     text = f"CAST({col} AS VARCHAR)"
     if "re" in mods:
+        _check_regex(str(value))
         return f"regexp_matches({text}, {lit(value)})"
     s = str(value).lower()
     if "contains" in mods:
@@ -143,12 +147,30 @@ def _value_sql(col: str, mods: list[str], value) -> str:
     return f"lower({text}) LIKE {lit(pattern)} ESCAPE '\\'"
 
 
+@lru_cache(maxsize=4096)
+def _check_regex(pattern):
+    import duckdb
+    try:
+        with duckdb.connect() as connection:
+            connection.execute("SELECT regexp_matches('', ?)", [pattern]).fetchone()
+    except duckdb.Error:
+        raise SigmaError('regular expression is not supported by DuckDB/RE2') from None
+
+
 def _field_sql(key: str, value) -> str:
     name, *mods = key.split("|")
     bad = set(mods) - SUPPORTED_MODS
     if bad:
         raise SigmaError(f"unsupported modifier(s) {sorted(bad)} on {name}")
     col = _column(name)
+    if 'exists' in mods:
+        if not isinstance(value,bool):
+            raise SigmaError('exists modifier requires a boolean')
+        return f'{col} IS NOT NULL' if value else f'{col} IS NULL'
+    if 'fieldref' in mods:
+        if not isinstance(value,str) or len(mods)!=1:
+            raise SigmaError('fieldref requires a single field name')
+        return f'{col} = {_column(value)}'
     if "cidr" in mods:
         return cidr_sql(col, value)
     values = value if isinstance(value, list) else [value]
@@ -162,7 +184,7 @@ def _selection_sql(name: str, sel) -> str:
     if isinstance(sel, dict):
         if not sel:
             raise SigmaError(f"empty selection {name}")
-        return "(" + " AND ".join(_field_sql(k, v) for k, v in sel.items()) + ")"
+        return "(coalesce((" + " AND ".join(_field_sql(k, v) for k, v in sel.items()) + "), FALSE))"
     if isinstance(sel, list) and all(isinstance(x, dict) for x in sel):
         return "(" + " OR ".join(_selection_sql(name, x) for x in sel) + ")"
     raise SigmaError(f"selection {name}: keyword lists are not supported")
@@ -267,7 +289,8 @@ def parse_rule(doc: dict, source_file: str) -> Rule:
     techniques, tactic = _tags(doc.get("tags"))
     base = dict(id=rid, title=str(doc.get("title", rid)), level=level, severity=LEVELS[level],
                 techniques=techniques, tactic_hint=tactic, author=str(doc.get("author", "")),
-                source_file=source_file, always_emit=bool((doc.get("trace") or {}).get("always_emit")))
+                source_file=source_file, always_emit=bool((doc.get("trace") or {}).get("always_emit")),
+                logsource=dict(doc.get('logsource') or {}))
     if "correlation" in doc:
         c = doc["correlation"]
         ctype = c.get("type")
@@ -314,12 +337,21 @@ def parse_rule(doc: dict, source_file: str) -> Rule:
 
 
 def load_rules(rules_dir: str | Path) -> tuple[dict[str, Rule], list[str]]:
+    root=Path(rules_dir)
+    files=tuple((str(path),path.stat().st_size,path.stat().st_mtime_ns) for path in sorted(root.rglob('*.y*ml')))
+    rules,errors=_load_rules_cached(files)
+    return dict(rules),list(errors)
+
+
+@lru_cache(maxsize=8)
+def _load_rules_cached(files) -> tuple[dict[str, Rule], list[str]]:
     """Load every *.yml/*.yaml under rules_dir. Returns (rules by id, error messages)."""
     rules: dict[str, Rule] = {}
     errors: list[str] = []
-    for path in sorted(Path(rules_dir).rglob("*.y*ml")):
+    for filename,_,_ in files:
+        path=Path(filename)
         try:
-            docs = list(yaml.safe_load_all(path.read_text()))
+            docs = list(yaml.safe_load_all(path.read_text(encoding="utf-8-sig")))
         except yaml.YAMLError as exc:
             errors.append(f"{path.name}: YAML error: {exc}")
             continue

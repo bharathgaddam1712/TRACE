@@ -7,3 +7,7 @@ data/planted
 attack/*.json
 **/__pycache__
 *.zip
+
+.env
+.env.*
+*.sqlite3*

@@ -11,7 +11,7 @@ COPY configs ./configs
 COPY rules ./rules
 COPY web ./web
 COPY data/sample ./data/sample
-RUN pip install --no-deps -e . \
+RUN pip install -e ".[graph]" \
  && useradd --create-home --uid 10001 trace \
  && mkdir -p /app/out /app/work \
  && chown -R trace:trace /app

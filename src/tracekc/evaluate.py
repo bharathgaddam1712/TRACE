@@ -53,7 +53,7 @@ def evaluate(out_dir: Path, gt: dict) -> dict:
         by_event[event_id].append((signal_id, incident_id, step, technique))
         if incident_id is not None:
             incident_events[int(incident_id)].add(event_id)
-    n_incidents = len(json.loads((out_dir / "index.json").read_text()))
+    n_incidents = len(json.loads((out_dir / "index.json").read_text(encoding="utf-8-sig")))
 
     def rates(scope: str) -> dict:
         total = found = strict = parent = 0
