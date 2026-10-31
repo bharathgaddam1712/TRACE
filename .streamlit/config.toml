@@ -1,0 +1,18 @@
+[server]
+# Browser uploads are held in memory; larger datasets should be processed with `tracekc run`.
+maxUploadSize = 1024
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "viewer"
+
+[theme]
+base = "dark"
+primaryColor = "#3b82f6"
+backgroundColor = "#0b1220"
+secondaryBackgroundColor = "#111a2e"
+textColor = "#e5e7eb"
+borderColor = "#22304d"
+font = "sans serif"
