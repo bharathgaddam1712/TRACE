@@ -1,0 +1,15 @@
+{
+  "selection": "contiguous file prefix, complete lines; not a random or representative sample",
+  "source_name": "firex-10G.log",
+  "source_bytes": 6543120032,
+  "offset": 0,
+  "bytes": 524288146,
+  "records": 992884,
+  "sha256": "ec61c178d4ef7783c1bf67fb6ca6f687b6f6ef65f0c864a69b59f24c4dc0f773",
+  "sensitive_field_counts": {},
+  "privacy_note": "Pattern scan is not a guarantee of anonymity; network identifiers remain.",
+  "distribution_file": "firex-500mib.log.gz",
+  "distribution_bytes": 62106631,
+  "distribution_sha256": "610492f53b55169433a1e5f3a12ed154ae33d357a11cede3c3716f176dd9ace3",
+  "distribution": "lossless gzip; decompress before running the chunked-reader demo"
+}

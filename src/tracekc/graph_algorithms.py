@@ -84,3 +84,20 @@ def signal_similarity(left,right):
         for identity in signal.get('process_keys') or []: result['process:'+identity]=5
         return result
     return weighted_jaccard(features(left),features(right))
+
+
+def link_decision(left, right, relation, config):
+    """Relation-specific gate, after SQL time/session and hub filtering.
+
+    A shared external endpoint/account can span hosts: a universal Jaccard
+    threshold incorrectly penalizes that intended relationship. Scores are
+    association strengths, never probabilities or proof of common attribution.
+    """
+    score = signal_similarity(left, right)
+    threshold = float(config.get('relation_thresholds', {}).get(
+        relation, config.get('similarity_threshold', 0.3)))
+    specific = relation in {'lateral', 'process_entity'}
+    return {'accepted': specific or score >= threshold, 'similarity': score,
+            'threshold': None if specific else threshold,
+            'reason': ('specific process/logon evidence' if specific else
+                       f'{relation} pivot passed time/hub guards; similarity {score:.4f}, threshold {threshold:.4f}')}

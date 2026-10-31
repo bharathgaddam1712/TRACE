@@ -121,6 +121,11 @@ def create_app(out_dir: Path, ai_service=None) -> FastAPI:
     def forecast_benchmark():
         return store._read('forecast-comparison.json',{'status':'unavailable','reason':'No chronological model comparison has been run for this dataset.'})
 
+    @app.get('/temporal/benchmark')
+    def temporal_benchmark():
+        return store._read('temporal-benchmark.json', {'status':'unavailable',
+            'reason':'No temporal interaction experiment has been run for this dataset.'})
+
     @app.get('/coverage')
     def coverage():
         store.refresh()

@@ -48,6 +48,9 @@ detection:
 
 correlation:
   similarity_threshold: 0.3 # weighted Jaccard for weak entity pivots; specific process/logon evidence is retained
+  relation_thresholds:      # cross-host account/IP pivots have different feature overlap
+    user: 0.20
+    ip: 0.10
   dedupe_window_s: 300       # same technique+entities within this gap collapse into one signal
   session_gap_s: 3600        # a pivot (user/host/IP) chain breaks after this much silence
   hub_max_users: 5           # host or IP sessions touching more distinct users are not used to link
@@ -86,6 +89,10 @@ output:
 
 forecast:
   model_path: null            # optional JSON from tracekc train-forecast; no invented training data
+  sequence_depth: 3           # future techniques, hard limit 5
+  top_n: 5
+  beam_width: 20              # bounded search, hard limit 50
+  min_support: 3              # abstain when historical transition support is insufficient
 
 relationships:
   threshold: 0.6

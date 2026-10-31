@@ -1,5 +1,10 @@
 # TRACE: evidence-backed attack investigation
 
+For the reproducible 500 MiB real-log demo, bounded attacker-technique sequences,
+and causal temporal ML experiments, see [demo commands](docs/DEMO.md) and
+[research / evaluation design](docs/TEMPORAL_RESEARCH.md). The large demo input is
+stored with Git LFS. Temporal interaction scores are not attack-prediction accuracy.
+
 TRACE reads security logs, detects suspicious behavior, maps it to MITRE ATT&CK, links related signals into incidents, builds an evidence graph, estimates possible next access, and serves an investigation UI.
 
 The detection pipeline works offline. Optional Sarvam analysis adds explanations, investigation chat, mapping suggestions, compiler-validated Sigma drafts, and multilingual reports. AI suggestions never silently change detections, enable rules, dismiss incidents or perform containment.

@@ -78,7 +78,13 @@ function switchTab(name) {
   if (name === 'graph') { if (!cy) drawGraph(); else {cy.resize(); cy.fit(undefined,35);} }
   if (name === 'findings') loadFindings();
   if (name === 'coverage') loadCoverage();
-  if (name === 'predict') loadForecastComparison();
+  if (name === 'predict') {renderSequenceForecast();loadForecastComparison();loadTemporalComparison();}
+}
+function renderSequenceForecast() {
+  let panel=$('#sequence-forecast');
+  if(!panel){panel=document.createElement('div');panel.id='sequence-forecast';$('#panel-predict').prepend(panel);}
+  const forecast=current.forecast || {}, sequences=forecast.sequences || [];
+  panel.innerHTML=`<h3>Hypothetical next technique sequences</h3><p class="notice">${esc(forecast.interpretation || forecast.reason || 'No historical model configured.')}</p>${(forecast.evaluation_warnings || []).map(w=>`<p class="notice">${esc(w)}</p>`).join('')}${sequences.length?`<p>Model: ${esc(forecast.method)} · Label source: ${esc(forecast.label_source)}</p><ol>${sequences.map(path=>`<li><div class="chips">${path.techniques.map(t=>`<span class="chip">${esc(t)}</span>`).join('<span aria-label="then">→</span>')}</div><small>Empirical model path score: ${Number(path.model_path_score).toFixed(3)}; not attack probability.</small><details><summary>Support and backoff for each step</summary><pre>${esc(JSON.stringify(path.steps,null,2))}</pre></details></li>`).join('')}</ol>`:'<p>No supported sequence is available for this incident.</p>'}`;
 }
 function drawGraph() {
   if (!window.cytoscape) { $('#graph').textContent = 'Graph library unavailable. Use the timeline and report.'; return; }
@@ -145,6 +151,16 @@ async function loadCoverage() {
 }
 async function loadForecastComparison() {
   try{const data=await api('/forecast/benchmark');if(!$('#forecast-comparison'))return;if(!data.test){$('#forecast-comparison').textContent=data.reason || 'No model comparison yet.';return;}$('#forecast-comparison').innerHTML=`<h3>Chronological model comparison</h3><p class="notice">Label source: ${esc(data.label_source)}. ${esc(data.interpretation)}</p><p>Selected using validation: ${esc(data.selected_on_validation)}</p><table><tr><th>Model</th><th>Test top-1</th><th>Top-3</th><th>MRR</th></tr>${Object.entries(data.test).map(([name,result])=>`<tr><td>${esc(name)}</td><td><progress max="1" value="${result.top1 || 0}"></progress> ${((result.top1 || 0)*100).toFixed(1)}%</td><td>${((result.top3 || 0)*100).toFixed(1)}%</td><td>${Number(result.mrr || 0).toFixed(3)}</td></tr>`).join('')}</table>${data.sarvam?'<h3>Sarvam held-out comparison</h3><pre>'+esc(JSON.stringify(data.sarvam,null,2))+'</pre>':''}`;}catch(error){if($('#forecast-comparison'))$('#forecast-comparison').textContent=error.message;}
+}
+async function loadTemporalComparison() {
+  let panel = $('#temporal-comparison');
+  if (!panel) {panel=document.createElement('div');panel.id='temporal-comparison';$('#panel-predict').append(panel);}
+  try {
+    const data=await api('/temporal/benchmark');
+    if (!panel.isConnected) return;
+    if (!data.test) {panel.textContent=data.reason;return;}
+    panel.innerHTML=`<h3>Temporal network interaction experiment</h3><p class="notice">These scores measure observed network interactions against sampled alternatives. They are not attack detection or attack-success accuracy.</p><p>Selected on validation: ${esc(data.selected_on_validation)}. ${esc(data.events)} chronological interactions.</p><table><tr><th>Model</th><th>Test MRR</th><th>Hits@1</th><th>Hits@3</th></tr>${Object.entries(data.test).map(([name,result])=>`<tr><td>${esc(name)}</td><td>${Number(result.mrr ?? 0).toFixed(3)}</td><td>${Number(result.hits1 ?? 0).toFixed(3)}</td><td>${Number(result.hits3 ?? 0).toFixed(3)}</td></tr>`).join('')}</table><details><summary>Evaluation protocol and limitations</summary><pre>${esc(JSON.stringify({protocol:data.protocol,negative_sampling:data.negative_sampling,cold_pair_test:data.cold_pair_test,limitations:data.limitations},null,2))}</pre></details>`;
+  } catch(error) {panel.textContent=error.message;}
 }
 async function loadMoreIncidents() {
   const version=loadVersion;$('#load-more').disabled=true;

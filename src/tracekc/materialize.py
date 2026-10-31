@@ -13,6 +13,8 @@ import json
 import re
 import hashlib
 import os
+from collections import defaultdict
+from tracekc.graph_algorithms import link_decision
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -191,19 +193,23 @@ def materialize(con, cfg: dict, out_dir: Path, promoted, isolated, graph, correl
     lookahead_events = set()
     model_path = cfg.get('forecast', {}).get('model_path')
     forecast_model = json.loads(project_path(cfg, model_path).read_text(encoding='utf-8-sig')) if model_path else None
+    edges_by_source = defaultdict(list)
+    for edge in correlation_edges:
+        edges_by_source[edge[0]].append(edge)
     for inc_id, (score, detail, sigs) in enumerate(promoted, start=1):
         ext_ips = {ip for s in sigs for ip in (s["src_ip"], s["dst_ip"]) if _is_external(ip, host_ips)}
         steps = [_step(k, s, n_ids) for k, s in enumerate(sigs, start=1)]
         step_lookup = {s['signal_id']: k for k, s in enumerate(sigs, 1)}
         links = []
-        for a, b, relation in correlation_edges:
+        for a, b, relation in (edge for signal in step_lookup for edge in edges_by_source.get(signal, ())):
             if a not in step_lookup or b not in step_lookup:
                 continue
             left, right = sorted([step_lookup[a], step_lookup[b]])
             links.append({'from_step': left, 'to_step': right, 'relation': relation,
                           'similarity': round(signal_similarity(sigs[left-1],sigs[right-1]),4),
                           'kind': 'observed' if relation in {'lateral', 'process_entity'} else 'inferred',
-                          'reasons': [f'{relation} correlation; association does not establish causation'],
+                          'reasons': [link_decision(sigs[left-1], sigs[right-1], relation, cfg['correlation'])['reason'],
+                                      'Association does not establish causation'],
                           'event_ids': sorted(set(steps[left-1]['event_ids'] + steps[right-1]['event_ids']))})
         for step in steps:
             incoming = [link for link in links if link['to_step'] == step['step']]
@@ -239,7 +245,7 @@ def materialize(con, cfg: dict, out_dir: Path, promoted, isolated, graph, correl
             "attribution": sorted({a for s in sigs for a in (s["authors"] or []) if a}),
         }
         inc["techniques"] = [{"id": t, "name": n, "tactic": tac} for t, n, tac in inc["techniques"]]
-        inc['forecast'] = predict(forecast_model, sigs[-1]['technique'], inc['first_seen'], [s['technique'] for s in sigs if s['technique']])
+        inc['forecast'] = predict(forecast_model, sigs[-1]['technique'], inc['first_seen'], [s['technique'] for s in sigs if s['technique']], cfg.get('forecast',{}))
         inc["graph"] = _graph(sigs, ext_ips, reach, links)
         inc["narrative"] = _narrative(inc)
         write_json(inc_dir / f"{inc_id}.json", inc)

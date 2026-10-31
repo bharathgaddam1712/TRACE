@@ -145,7 +145,7 @@ def link_edges(con, cfg: dict) -> list[tuple[int, int, str]]:
         ok AS (
           SELECT p.* FROM pivot_sessions p JOIN hubs h USING (ptype, pkey, sess)
           WHERE NOT ((p.ptype IN ('host', 'ip') AND h.users > {int(c['hub_max_users'])})
-                  OR (p.ptype = 'user' AND h.hosts > {int(c['hub_max_hosts'])})))
+                  OR (p.ptype IN ('user', 'ip') AND h.hosts > {int(c['hub_max_hosts'])})))
         SELECT a, b, ptype FROM (
           SELECT lag(signal_id) OVER (PARTITION BY ptype, pkey, sess ORDER BY ts, signal_id) AS a,
                  signal_id AS b, ptype FROM ok)
@@ -154,7 +154,9 @@ def link_edges(con, cfg: dict) -> list[tuple[int, int, str]]:
     # and the nearest later one on the target host. Targeted ASOF edges survive hub pivots.
     rows += run(con, f"""
         WITH lat AS (SELECT signal_id, src_host, host, user_name, ts_first_ms FROM linkable
-                     WHERE src_host IS NOT NULL AND src_host <> host AND user_name IS NOT NULL),
+                     WHERE src_host IS NOT NULL AND src_host <> host AND user_name IS NOT NULL
+                       AND json_extract_string(evidence, '$.action') = 'user_logon'
+                       AND json_extract_string(evidence, '$.outcome') = 'success'),
         cand AS (SELECT signal_id, host, user_name, ts_first_ms FROM linkable WHERE severity >= 50)
         SELECT c.signal_id, l.signal_id, 'lateral' FROM lat l ASOF JOIN cand c
           ON l.src_host = c.host AND l.user_name = c.user_name AND l.ts_first_ms >= c.ts_first_ms
@@ -163,13 +165,12 @@ def link_edges(con, cfg: dict) -> list[tuple[int, int, str]]:
         SELECT l.signal_id, c.signal_id, 'lateral' FROM lat l ASOF JOIN cand c
           ON l.host = c.host AND l.user_name = c.user_name AND l.ts_first_ms <= c.ts_first_ms
         WHERE c.ts_first_ms - l.ts_first_ms <= {gap}""")
-    from tracekc.graph_algorithms import signal_similarity
+    from tracekc.graph_algorithms import link_decision
     signals = {s['signal_id']: s for s in dicts(con, 'SELECT signal_id, host, user_name, src_ip, dst_ip, technique, process_keys FROM linkable')}
-    threshold = float(c.get('similarity_threshold', 0.3))
     accepted=[]
     for a,b,relation in rows:
         if a == b: continue
-        if relation in {'lateral','process_entity'} or signal_similarity(signals[a],signals[b]) >= threshold:
+        if link_decision(signals[a],signals[b],relation,c)['accepted']:
             accepted.append((int(a),int(b),relation))
     return sorted(set(accepted))
 

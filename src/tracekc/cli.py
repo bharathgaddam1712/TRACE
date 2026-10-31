@@ -124,7 +124,7 @@ def cmd_export_history(args) -> int:
 
 
 def cmd_forecast_benchmark(args) -> int:
-    from tracekc.forecast import benchmark, compare_sarvam
+    from tracekc.forecast import benchmark, compare_sarvam, automatic_cutoffs
     from tracekc.materialize import write_json
     from tracekc.label import load_mapping
     from tracekc.config import PROJECT_ROOT
@@ -132,9 +132,7 @@ def cmd_forecast_benchmark(args) -> int:
     left,right=args.train_before,args.test_after
     if not left and not right:
         rows=json.loads(source.read_text(encoding='utf-8-sig'))['incidents']
-        starts=sorted({row['started_at'] for row in rows if len(row['techniques'])>=2})
-        if len(starts)<10:raise ValueError('Automatic split requires at least 10 distinct incident start times')
-        left,right=starts[int(len(starts)*0.7)],starts[int(len(starts)*0.85)]
+        left,right=automatic_cutoffs(rows)
     if not left or not right:raise ValueError('Provide both --train-before and --test-after, or neither for 70/15/15 time cutoffs')
     report,model,test=benchmark(source,left,right)
     target=Path(args.out);target.parent.mkdir(parents=True,exist_ok=True)
@@ -160,6 +158,34 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="tracekc", description=__doc__)
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)
+    temporal = sub.add_parser('temporal-benchmark', help='Causal network interaction ranking; not attack accuracy')
+    temporal.add_argument('--events', required=True, help='Normalized work/events.parquet from run --keep-work')
+    temporal.add_argument('--out', required=True)
+    temporal.add_argument('--max-events', type=int, default=100000)
+    temporal.add_argument('--negatives', type=int, default=10)
+    temporal.add_argument('--seed', type=int, default=17)
+    temporal.add_argument('--negative-mode', choices=['mixed','degree_matched'], default='degree_matched')
+    def temporal_command(args):
+        from tracekc.temporal import benchmark
+        report = benchmark(args.events,args.out,args.max_events,args.negatives,args.seed,args.negative_mode)
+        print(json.dumps(report,indent=2))
+        return 0
+    temporal.set_defaults(fn=temporal_command)
+    sequence = sub.add_parser('predict-sequence',help='Bounded hypothetical next ATT&CK sequences from a fitted historical model')
+    sequence.add_argument('--model',required=True)
+    sequence.add_argument('--history',nargs='+',required=True,help='Observed ATT&CK technique IDs in order')
+    sequence.add_argument('--as-of',required=True,help='Incident start time, ISO8601 with timezone')
+    sequence.add_argument('--depth',type=int,default=3)
+    sequence.add_argument('--top-n',type=int,default=5)
+    sequence.add_argument('--beam-width',type=int,default=20)
+    def sequence_command(args):
+        from tracekc.forecast import predict
+        model = json.loads(Path(args.model).read_text(encoding='utf-8-sig'))
+        result = predict(model,args.history[-1],args.as_of,args.history,
+                         {'sequence_depth':args.depth,'top_n':args.top_n,'beam_width':args.beam_width})
+        print(json.dumps(result,indent=2))
+        return 0
+    sequence.set_defaults(fn=sequence_command)
 
     def common(sp):
         sp.add_argument("--config", help="config YAML (default configs/config.yaml)")

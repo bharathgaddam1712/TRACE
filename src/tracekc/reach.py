@@ -32,21 +32,38 @@ class AccessGraph:
             AND coalesce(outcome, 'unknown') <> 'failure'
             GROUP BY host, dst_host, dst_port, outcome, ts_ms // 3600000""")
         self.latest = max([r[3] for r in self.logons] + [r[2] for r in self.admins] + [r[3] for r in self.network] + [0])
+        self.logons_by_user, self.logons_by_host = defaultdict(list), defaultdict(list)
+        self.admins_by_user, self.network_by_host = defaultdict(list), defaultdict(list)
+        for row in sorted(self.logons, key=lambda r:(r[3],r[4])):
+            self.logons_by_user[row[0]].append(row)
+            self.logons_by_host[row[1]].append(row)
+        for row in sorted(self.admins, key=lambda r:(r[2],r[3])):
+            self.admins_by_user[row[0]].append(row)
+        for row in sorted(self.network, key=lambda r:(r[3],r[4])):
+            self.network_by_host[row[0]].append(row)
 
     def lookahead(self, users: set[str], hosts: set[str], as_of_ms: int | None = None) -> dict:
         cutoff = self.latest if as_of_ms is None else as_of_ms
         floor = cutoff - int(self.la.get('evidence_max_age_s', 604800)) * 1000
         session_floor = cutoff - int(self.la.get('session_max_age_s', 28800)) * 1000
+        users = {u for u in users if u and u not in self.excluded}
         accounts, sessions, network = defaultdict(dict), defaultdict(dict), defaultdict(dict)
-        for user, host, kind, ts, event in self.logons:
+        relevant_users = set(users)
+        if int(self.la['max_hops']) >= 2:
+            for host in sorted(hosts):
+                for user, _, kind, ts, event in self.logons_by_host.get(host, ()):
+                    if kind in INTERACTIVE and max(floor,session_floor) <= ts <= cutoff and user not in self.excluded:
+                        sessions[host][user] = {'ts':ts, 'event':event}
+                        relevant_users.add(user)
+        for user, host, kind, ts, event in (row for user in sorted(relevant_users) for row in self.logons_by_user.get(user, ())):
             if floor <= ts <= cutoff:
                 accounts[user][host] = {'ts': ts, 'event': event, 'kind': kind, 'admin': False}
                 if kind in INTERACTIVE and ts >= session_floor:
                     sessions[host][user] = {'ts': ts, 'event': event}
-        for user, host, ts, event in self.admins:
+        for user, host, ts, event in (row for user in sorted(relevant_users) for row in self.admins_by_user.get(user, ())):
             if floor <= ts <= cutoff:
                 accounts[user][host] = {'ts': ts, 'event': event, 'kind': 'privileged_logon', 'admin': True}
-        for src, dst, port, ts, event, outcome in self.network:
+        for src, dst, port, ts, event, outcome in (row for host in sorted(hosts) for row in self.network_by_host.get(host, ())):
             if floor <= ts <= cutoff:
                 network[src][dst] = {'ts': ts, 'event': event, 'port': port, 'outcome': outcome}
         users = {u for u in users if u and u not in self.excluded}

@@ -1,7 +1,7 @@
 """PASS 2: detections.
 
 Four families, all executed inside DuckDB:
-  sigma    - every single-event Sigma rule is evaluated in ONE scan of the events (combined predicate)
+  sigma    - scoped, bounded batches over materialized normalized events
   sigma correlation - event_count / value_count / temporal_ordered over the matched rows
   vendor   - EDR alert rows (kind=alert) that our rules did not already cover
   builtin  - first-seen lateral logon, unusual outbound volume, rare process lineage
@@ -10,6 +10,7 @@ Several rules firing on the same event collapse into one detection (highest seve
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 
 from tracekc.engine import one, run
 from tracekc.sigma import ENTITY_COLS, LOGSOURCE, Rule, emitting_rule_ids, lit, relation_sql
@@ -79,14 +80,31 @@ def _rule_hits(con, rules: dict[str, Rule], batch_size: int = 16) -> int:
     # Bound SQL planner memory and compilation time as community coverage grows.
     run(con, f"CREATE OR REPLACE TABLE raw_rule_hits AS SELECT event_id, ts_ms, {ENT}, "
              f"NULL::VARCHAR AS evidence, []::VARCHAR[] AS hits FROM ev WHERE FALSE")
-    base.sort(key=lambda rule:(str(rule.logsource),rule.id))
-    for offset in range(0,len(base),batch_size):
-        batch=base[offset:offset+batch_size]
-        cases = ",\n      ".join(f"CASE WHEN {r.where} THEN {lit(r.id)} END" for r in batch)
-        any_match = "\n   OR ".join(f"({r.where})" for r in batch)
-        run(con, f"""INSERT INTO raw_rule_hits
-            SELECT event_id,ts_ms,{ENT},{EVIDENCE_SQL} AS evidence,list_distinct([{cases}]) AS hits
-            FROM ev WHERE {any_match}""")
+    # Resolve expensive ASOF/process/IP joins once, not once per batch. This table
+    # can spill under DuckDB's buffer budget. Explicit scopes preserve NOT/NULL rules.
+    materialized = len(base) > batch_size * 2
+    if materialized:
+        run(con, 'CREATE OR REPLACE TEMP TABLE detection_events AS SELECT * FROM ev')
+    groups = defaultdict(list)
+    for rule in sorted(base, key=lambda rule: rule.id):
+        scope = tuple(sorted({LOGSOURCE[(key,value)] for key,value in rule.logsource.items()
+                              if LOGSOURCE.get((key,value))})) if materialized else ()
+        groups[scope].append(rule)
+    for scope, scoped_rules in sorted(groups.items()):
+        predicate = ' AND '.join(f'({part})' for part in scope) or 'TRUE'
+        if materialized:
+            run(con, f'CREATE OR REPLACE TEMP TABLE rule_scope AS SELECT * FROM detection_events WHERE {predicate}')
+        relation = 'rule_scope' if materialized else 'ev'
+        for offset in range(0,len(scoped_rules),batch_size):
+            batch=scoped_rules[offset:offset+batch_size]
+            cases = ",\n      ".join(f"CASE WHEN {r.where} THEN {lit(r.id)} END" for r in batch)
+            any_match = "\n   OR ".join(f"({r.where})" for r in batch)
+            run(con, f"""INSERT INTO raw_rule_hits
+                SELECT event_id,ts_ms,{ENT},{EVIDENCE_SQL} AS evidence,list_distinct([{cases}]) AS hits
+                FROM {relation} WHERE {any_match}""")
+    if materialized:
+        run(con, 'DROP TABLE rule_scope')
+        run(con, 'DROP TABLE detection_events')
     run(con, f"""CREATE OR REPLACE TABLE rule_hits AS
         SELECT event_id,any_value(ts_ms) AS ts_ms,
                {', '.join(f'any_value({column}) AS {column}' for column in ENTITY_COLS)},
