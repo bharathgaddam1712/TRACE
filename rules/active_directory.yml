@@ -1,0 +1,305 @@
+# Active Directory attack detections for domain controller Security and Directory Service logs
+# (Winlogbeat ECS layout: winlog.event_id + winlog.event_data.*). Requires DC auditing of
+# Kerberos service tickets, credential validation, directory service access/changes and
+# security group management.
+#
+# Not covered here, by design:
+#  * "service ticket without a prior TGT" (golden ticket): needs an absence correlation, and
+#    produces false positives whenever DC logs are incomplete or tickets were issued by another DC.
+#  * after-hours authentication counts and unsupervised anomaly models: environment-specific baselines.
+#  * LDAP signing events 2886/2887/2889 and expensive-search 1139: configuration hygiene, not attacks.
+
+# ------------------------------------------------------------------ Kerberos
+
+title: Kerberos service ticket requested with RC4 encryption
+id: trace-ad-kerberos-rc4-tgs
+status: experimental
+description: >
+  Building block for Kerberoasting. RC4-HMAC (0x17) service tickets are offline-crackable.
+  Machine accounts and krbtgt are excluded; silent unless the Kerberoasting correlation fires.
+author: TRACE team
+logsource: {product: windows, service: security}
+detection:
+  selection:
+    winlog.event_id: 4769
+    TicketEncryptionType: '0x17'
+  filter_machine:
+    ServiceName|endswith: '$'
+  filter_krbtgt:
+    ServiceName: ['krbtgt', 'kadmin/changepw']
+  condition: selection and not 1 of filter_*
+level: low
+tags: [attack.credential_access, attack.t1558.003]
+---
+title: Kerberoasting - one account requests RC4 tickets for many services
+id: trace-ad-kerberoasting
+status: experimental
+description: More than five distinct service accounts receive RC4 tickets for one requester within an hour.
+author: TRACE team
+correlation:
+  type: value_count
+  rules: [trace-ad-kerberos-rc4-tgs]
+  group-by: [user.name]
+  timespan: 1h
+  condition: {gt: 5, field: ServiceName}
+level: high
+tags: [attack.credential_access, attack.t1558.003]
+---
+title: Kerberos ticket for krbtgt with weak encryption (possible golden ticket)
+id: trace-ad-krbtgt-weak-encryption
+status: experimental
+description: >
+  Forged golden tickets commonly use RC4 or DES. AES-only domains should never issue these.
+  Note: AES256 is 0x12 and AES128 is 0x11; 0x17 is RC4-HMAC.
+author: TRACE team
+logsource: {product: windows, service: security}
+detection:
+  selection:
+    winlog.event_id: 4769
+    ServiceName|startswith: 'krbtgt'
+    TicketEncryptionType: ['0x1', '0x3', '0x17', '0x18']
+  condition: selection
+level: high
+tags: [attack.credential_access, attack.t1558.001]
+---
+title: Windows authentication failure (Kerberos pre-auth, NTLM or logon)
+id: trace-ad-auth-failure
+status: experimental
+description: Building block for password spraying. 0x18 bad password, 0x6 unknown user, 0xc000006a / 0xc0000064 NTLM.
+author: TRACE team
+logsource: {product: windows, service: security}
+detection:
+  kerberos:
+    winlog.event_id: 4771
+    Status: ['0x18', '0x6']
+  ntlm:
+    winlog.event_id: 4776
+    Status: ['0xc000006a', '0xc0000064']
+  logon:
+    winlog.event_id: 4625
+  condition: 1 of them
+level: low
+tags: [attack.credential_access, attack.t1110]
+---
+title: Password spraying against the domain from one source
+id: trace-ad-password-spray
+status: experimental
+description: More than ten distinct accounts fail Kerberos/NTLM/logon authentication from one address within five minutes.
+author: TRACE team
+correlation:
+  type: value_count
+  rules: [trace-ad-auth-failure]
+  group-by: [source.ip]
+  timespan: 5m
+  condition: {gt: 10, field: user.name}
+level: high
+tags: [attack.credential_access, attack.t1110.003]
+
+# ------------------------------------------------------------------ Replication abuse
+---
+title: DCSync - directory replication requested by a non-machine account
+id: trace-ad-dcsync
+status: experimental
+description: >
+  Replication extended rights (Get-Changes, Get-Changes-All, Get-Changes-In-Filtered-Set) used by an
+  account that is not a domain controller. Azure AD Connect (MSOL_*) accounts legitimately replicate;
+  add them to configs/suppressions.yaml.
+author: TRACE team
+logsource: {product: windows, service: security}
+detection:
+  selection:
+    winlog.event_id: 4662
+    AccessMask: '0x100'
+    Properties|contains:
+      - '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'
+      - '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2'
+      - '89e95b76-444d-4c62-991a-0facbeda640c'
+  filter_machine:
+    SubjectUserName|endswith: '$'
+  condition: selection and not filter_machine
+level: critical
+tags: [attack.credential_access, attack.t1003.006]
+---
+title: Replication rights granted on the domain object
+id: trace-ad-replication-rights-granted
+status: experimental
+description: A security descriptor change grants DS-Replication-Get-Changes(-All), enabling a later DCSync.
+author: TRACE team
+logsource: {product: windows, service: security}
+detection:
+  selection:
+    winlog.event_id: 5136
+    AttributeLDAPDisplayName: 'nTSecurityDescriptor'
+    AttributeValue|contains:
+      - '1131f6aa-9c07-11d1-f79f-00c04fc2dcd2'
+      - '1131f6ad-9c07-11d1-f79f-00c04fc2dcd2'
+      - '89e95b76-444d-4c62-991a-0facbeda640c'
+  condition: selection
+level: high
+tags: [attack.persistence, attack.t1098]
+---
+title: Rogue domain controller registration (DCShadow)
+id: trace-ad-dcshadow
+status: experimental
+description: >
+  A computer gains the Global Catalog / DRS replication SPNs that DCShadow registers to push changes
+  as a fake domain controller.
+author: TRACE team
+logsource: {product: windows, service: security}
+detection:
+  spn_change:
+    winlog.event_id: 5136
+    AttributeLDAPDisplayName: 'servicePrincipalName'
+    AttributeValue|startswith: 'GC/'
+  computer_change:
+    winlog.event_id: 4742
+    ServicePrincipalNames|contains: 'E3514235-4B06-11D1-AB04-00C04FC2DCD2'
+  condition: 1 of them
+level: high
+tags: [attack.defense_impairment, attack.t1207]
+
+# ------------------------------------------------------------------ Privileged groups
+---
+title: Member added to a Tier-0 group (Domain, Enterprise or Schema Admins)
+id: trace-ad-tier0-group-add
+status: experimental
+author: TRACE team
+logsource: {product: windows, service: security}
+detection:
+  selection:
+    winlog.event_id: [4728, 4732, 4756]
+    group.name: ['Domain Admins', 'Enterprise Admins', 'Schema Admins']
+  condition: selection
+level: critical
+tags: [attack.persistence, attack.t1098.007]
+---
+title: Member added to a privileged operational group
+id: trace-ad-privileged-group-add
+status: experimental
+description: >
+  Groups with administrative paths to domain controllers. Backup Operators is raised above the
+  guide's medium because it can read NTDS.dit through backup privileges.
+author: TRACE team
+logsource: {product: windows, service: security}
+detection:
+  selection:
+    winlog.event_id: [4728, 4732, 4756]
+    group.name:
+      - 'Administrators'
+      - 'Account Operators'
+      - 'Backup Operators'
+      - 'Server Operators'
+      - 'DnsAdmins'
+      - 'Group Policy Creator Owners'
+  condition: selection
+level: high
+tags: [attack.persistence, attack.t1098.007]
+
+# ------------------------------------------------------------------ Directory object changes
+---
+title: AdminSDHolder permissions modified
+id: trace-ad-adminsdholder-modified
+status: experimental
+description: Changes to AdminSDHolder propagate to every protected account within an hour (SDProp persistence).
+author: TRACE team
+logsource: {product: windows, service: security}
+detection:
+  selection:
+    winlog.event_id: 5136
+    ObjectDN|contains: 'CN=AdminSDHolder,CN=System'
+  condition: selection
+level: high
+tags: [attack.persistence, attack.t1098]
+---
+title: Service principal name added to a user account (targeted Kerberoasting setup)
+id: trace-ad-spn-modified
+status: experimental
+description: An SPN written to a user object makes it Kerberoastable. Computer accounts updating their own SPNs are excluded.
+author: TRACE team
+logsource: {product: windows, service: security}
+detection:
+  selection:
+    winlog.event_id: 5136
+    AttributeLDAPDisplayName: 'servicePrincipalName'
+    ObjectClass: 'user'
+  filter_machine:
+    SubjectUserName|endswith: '$'
+  condition: selection and not filter_machine
+level: medium
+tags: [attack.persistence, attack.t1098]
+---
+title: Kerberos delegation configured on an account
+id: trace-ad-delegation-modified
+status: experimental
+description: Constrained or resource-based constrained delegation lets the holder impersonate users to the target service.
+author: TRACE team
+logsource: {product: windows, service: security}
+detection:
+  selection:
+    winlog.event_id: 5136
+    AttributeLDAPDisplayName:
+      - 'msDS-AllowedToDelegateTo'
+      - 'msDS-AllowedToActOnBehalfOfOtherIdentity'
+  condition: selection
+level: high
+tags: [attack.persistence, attack.t1098]
+
+# ------------------------------------------------------------------ Group Policy / SYSVOL
+---
+title: Group Policy object created, modified or deleted
+id: trace-ad-gpo-modified
+status: experimental
+description: GPO changes can push scheduled tasks, scripts or local admin membership to every computer in scope.
+author: TRACE team
+logsource: {product: windows, service: security}
+detection:
+  selection:
+    winlog.event_id: [5136, 5137, 5141]
+    ObjectDN|contains: 'CN=Policies,CN=System'
+  condition: selection
+level: medium
+tags: [attack.privilege_escalation, attack.t1484.001]
+---
+title: Executable or script written into SYSVOL policies
+id: trace-ad-sysvol-script-drop
+status: experimental
+author: TRACE team
+logsource: {category: file_event}
+detection:
+  path:
+    file.path|contains|all: ['\SYSVOL\', '\Policies\']
+  extension:
+    file.path|endswith: ['.exe', '.dll', '.ps1', '.bat', '.cmd', '.vbs', '.js']
+  condition: path and extension
+level: high
+tags: [attack.privilege_escalation, attack.t1484.001]
+
+# ------------------------------------------------------------------ LDAP
+---
+title: LDAP query for password or LAPS attributes
+id: trace-ad-ldap-sensitive-attribute
+status: experimental
+description: Directory Service event 1644 (expensive/inefficient search logging) shows a client reading credential attributes.
+author: TRACE team
+logsource: {product: windows}
+detection:
+  selection:
+    winlog.event_id: 1644
+    message|contains: ['unicodePwd', 'userPassword', 'unixUserPassword', 'ms-Mcs-AdmPwd', 'msLAPS-Password']
+  condition: selection
+level: high
+tags: [attack.credential_access, attack.t1552]
+---
+title: Large LDAP result set (domain enumeration)
+id: trace-ad-ldap-enumeration
+status: experimental
+description: A single LDAP search returned 1,000 or more entries (Directory Service event 1644).
+author: TRACE team
+logsource: {product: windows}
+detection:
+  selection:
+    winlog.event_id: 1644
+    message|re: 'Entries Returned:\s*[0-9]{4,}'
+  condition: selection
+level: medium
+tags: [attack.discovery, attack.t1087.002]

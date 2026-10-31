@@ -65,16 +65,17 @@ detection:
 level: high
 tags: [attack.persistence, attack.t1136]
 ---
-title: Member added to a privileged group
+title: Member added to a security group
 id: trace-admin-group-add
 status: experimental
+description: Any security-enabled group. Named privileged groups are covered by trace-ad-tier0-group-add / trace-ad-privileged-group-add.
 author: TRACE team
 logsource: {product: windows}
 detection:
   selection:
     winlog.event_id: [4728, 4732, 4756]
   condition: selection
-level: high
+level: low
 tags: [attack.persistence, attack.t1098]
 ---
 title: Net user / group add from command line

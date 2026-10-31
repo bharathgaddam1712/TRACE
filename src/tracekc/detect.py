@@ -27,7 +27,9 @@ EVIDENCE_SQL = """to_json({
   'message': message, 'dataset': dataset, 'vendor_rule': vendor_rule_name,
   'exe': proc_exe, 'registry': reg_path, 'registry_data': reg_data, 'file': file_path, 'dns': dns_name,
   'dst_domain': dst_domain, 'dst_port': dst_port, 'bytes': net_bytes, 'failed_count': failed_count,
-  'renamed_count': renamed_count, 'win_event_id': win_event_id, 'src_file': src_file})::VARCHAR"""
+  'renamed_count': renamed_count, 'win_event_id': win_event_id, 'src_file': src_file,
+  'service': win_service, 'ticket_encryption': win_ticket_enc, 'status': win_status, 'object_dn': win_object_dn,
+  'attribute': win_attribute, 'subject_user': win_subject_user, 'group': win_group, 'member': win_member})::VARCHAR"""
 
 DETECTIONS_DDL = """
 CREATE OR REPLACE TABLE detections (
