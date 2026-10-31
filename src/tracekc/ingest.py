@@ -32,7 +32,14 @@ ECS_COLUMNS = {
     "dns": "STRUCT(question STRUCT(name VARCHAR, type VARCHAR), response_code VARCHAR, resolved_ip VARCHAR[])",
     "file": "STRUCT(path VARCHAR, name VARCHAR, size BIGINT, extension VARCHAR)",
     "registry": "STRUCT(path VARCHAR, data STRUCT(strings VARCHAR[]))",
-    "winlog": "STRUCT(event_id INTEGER, logon STRUCT(type VARCHAR))",
+    # Windows Security / Directory Service fields used by the Active Directory rules (Winlogbeat ECS layout).
+    "winlog": "STRUCT(event_id INTEGER, record_id VARCHAR, logon STRUCT(type VARCHAR), event_data STRUCT("
+              "ServiceName VARCHAR, TicketEncryptionType VARCHAR, TicketOptions VARCHAR, Status VARCHAR, "
+              "PreAuthType VARCHAR, Properties VARCHAR, AccessMask VARCHAR, ObjectDN VARCHAR, ObjectName VARCHAR, "
+              "ObjectClass VARCHAR, AttributeLDAPDisplayName VARCHAR, AttributeValue VARCHAR, OperationType VARCHAR, "
+              "SubjectUserName VARCHAR, TargetUserName VARCHAR, MemberName VARCHAR, ServicePrincipalNames VARCHAR, "
+              "IpAddress VARCHAR))",
+    "group": "STRUCT(name VARCHAR)",
     "threat": "STRUCT(framework VARCHAR, technique STRUCT(id VARCHAR[], name VARCHAR[]), tactic STRUCT(name VARCHAR[]))",
     "rule": "STRUCT(id VARCHAR, name VARCHAR, severity VARCHAR)",
     "labels": "STRUCT(synthetic VARCHAR, simulated_detection VARCHAR)",
@@ -41,8 +48,10 @@ ECS_COLUMNS = {
 
 NORMALIZE_SQL = r"""
 SELECT
+  -- winlog.record_id keeps same-millisecond Windows events (e.g. 4769 bursts) distinct.
   coalesce(event.id, md5(concat_ws('|', filename, "@timestamp", host.name, event.action,
-           CAST(process.pid AS VARCHAR), source.ip, destination.ip, file.path, registry.path))) AS event_id,
+           CAST(process.pid AS VARCHAR), source.ip, destination.ip, file.path, registry.path,
+           winlog.record_id))) AS event_id,
   epoch_ms(try_cast("@timestamp" AS TIMESTAMPTZ)) AS ts_ms,
   lower(event.kind) AS kind,
   lower(event.dataset) AS dataset,
@@ -55,9 +64,15 @@ SELECT
                    ELSE split_part(coalesce(host.name, host.hostname), '.', 1) END), '') AS host,
   host.ip AS host_ips,
   lower(host.os.type) AS os_type,
-  nullif(lower(regexp_replace(user.name, '^.*\\|@.*$', '', 'g')), '') AS user_name,
+  -- Windows events without ECS user.name: authentication events name the account in
+  -- TargetUserName, directory/group changes name the actor in SubjectUserName.
+  nullif(lower(regexp_replace(coalesce(user.name,
+    CASE WHEN winlog.event_id IN (4624, 4625, 4768, 4769, 4770, 4771, 4776) THEN winlog.event_data.TargetUserName
+         ELSE winlog.event_data.SubjectUserName END), '^.*\\|@.*$', '', 'g')), '') AS user_name,
   user.domain AS user_domain,
-  source.ip AS src_ip, source.port AS src_port,
+  -- Windows reports IPv4 clients as ::ffff:a.b.c.d and local or absent clients as '-' / ::1.
+  nullif(nullif(regexp_replace(coalesce(source.ip, winlog.event_data.IpAddress), '^::ffff:', ''), '-'), '::1') AS src_ip,
+  source.port AS src_port,
   destination.ip AS dst_ip, destination.port AS dst_port, lower(destination.domain) AS dst_domain,
   lower(network.direction) AS direction, lower(network.protocol) AS net_protocol,
   lower(network.transport) AS net_transport, network.bytes AS net_bytes,
@@ -69,6 +84,18 @@ SELECT
   registry.path AS reg_path, array_to_string(registry.data.strings, ';') AS reg_data,
   lower(dns.question.name) AS dns_name,
   winlog.event_id AS win_event_id, lower(winlog.logon.type) AS logon_type,
+  lower(winlog.event_data.ServiceName) AS win_service, lower(winlog.event_data.TicketEncryptionType) AS win_ticket_enc,
+  lower(winlog.event_data.TicketOptions) AS win_ticket_options, lower(winlog.event_data.Status) AS win_status,
+  winlog.event_data.PreAuthType AS win_preauth, lower(winlog.event_data.Properties) AS win_properties,
+  lower(winlog.event_data.AccessMask) AS win_access_mask,
+  coalesce(winlog.event_data.ObjectDN, winlog.event_data.ObjectName) AS win_object_dn,
+  lower(winlog.event_data.ObjectClass) AS win_object_class, winlog.event_data.AttributeLDAPDisplayName AS win_attribute,
+  winlog.event_data.AttributeValue AS win_attr_value, winlog.event_data.OperationType AS win_operation,
+  lower(winlog.event_data.SubjectUserName) AS win_subject_user, lower(winlog.event_data.TargetUserName) AS win_target_user,
+  winlog.event_data.MemberName AS win_member, winlog.event_data.ServicePrincipalNames AS win_spns,
+  -- Group-change events (4727-4764) name the group in TargetUserName; ECS moves it to group.name.
+  lower(coalesce("group".name, CASE WHEN winlog.event_id BETWEEN 4727 AND 4764
+                                    THEN winlog.event_data.TargetUserName END)) AS win_group,
   rule.id AS vendor_rule_id, rule.name AS vendor_rule_name, lower(rule.severity) AS vendor_rule_severity,
   threat.technique.id AS vendor_techniques, threat.tactic.name AS vendor_tactics,
   coalesce(labels.simulated_detection = 'true', FALSE) AS gt_label,

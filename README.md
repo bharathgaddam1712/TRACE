@@ -57,7 +57,7 @@ Without a key, detection, graphs, prediction, reports and analyst notes still wo
 | Stage | Implementation | Current behavior |
 |---|---|---|
 | Read | `ingest.py`, `adapters.py` | DuckDB, explicit ECS schema, compressed Parquet, native FortiGate `.log`, ECS/NDJSON/gzip, CSV and timestamped syslog; normalization, deduplication, quality metrics and quarantine; unchanged-file and resumable chunk caches |
-| Detect | `sigma.py`, `detect.py`, `rules/` | 31 TRACE rules + 1,175 compatible SigmaHQ rules, vendor alerts, lateral logons, host/fleet volume baselines, rare process lineage; suppressions and recurrence controls |
+| Detect | `sigma.py`, `detect.py`, `rules/` | 48 TRACE rules (17 for Active Directory) + 1,175 compatible SigmaHQ rules, vendor alerts, lateral logons, host/fleet volume baselines, rare process lineage; suppressions and recurrence controls |
 | Map | `label.py`, `configs/attack_mapping.yaml` | ATT&CK v20 mapping, parent fallback, tactic validation, multiple technique IDs retained; official STIX verification |
 | Link | `correlate.py` | Account/host/IP/time pivots, stable process entities and lateral-logon edges, hub guards, over-merge guards, actual link provenance |
 | Graph | `materialize.py` | Hosts, users, IPs, processes, events, domains, files and registry entities; event IDs on edges; server-side entity/time filters |
@@ -74,6 +74,8 @@ Without a key, detection, graphs, prediction, reports and analyst notes still wo
 A directory is searched recursively for `.log`, `.json`, `.ndjson`, `.jsonl`, `.csv`, `.syslog` and configured gzip forms. The native reader recognizes FortiGate key=value records and reports malformed/binary spans explicitly. Only complete downloaded files should be processed; `.part` files are not discovered. The extension does not establish the format.
 
 CSV accepts dotted ECS column names plus aliases such as `timestamp`, `host`, `user`, `action`, `src_ip`, `dst_ip`, `dst_port`, `bytes`, `process_name` and `command_line`. Array values can be JSON arrays or semicolon-delimited. For detection, map actions to the ECS contract (e.g. `process_created`, `network_connection`, `user_logon`). Syslog requires an explicit ISO8601 timestamp and host; generic syslog messages are preserved but are not automatically parsed into Windows/process/network actions. Legacy yearless RFC3164 is rejected rather than assigned an invented date.
+
+Domain controller logs in Winlogbeat ECS form (`winlog.event_id`, `winlog.event_data.*`) feed the Active Directory rules in `rules/active_directory.yml`: Kerberoasting, krbtgt weak-encryption (golden ticket), password spraying via 4771/4776/4625, DCSync and replication-rights grants, DCShadow, Tier-0 and privileged group additions, AdminSDHolder, SPN and delegation changes, GPO/SYSVOL changes and sensitive or bulk LDAP searches. Enable DC auditing for Kerberos Service Ticket Operations, Kerberos Authentication Service, Credential Validation, Security Group Management, Directory Service Access and Directory Service Changes; LDAP rules also need Directory Service event 1644 (field engineering logging). Records without `event.id` are de-duplicated with `winlog.record_id`. Azure AD Connect `MSOL_*` accounts replicate legitimately and belong in `configs/suppressions.yaml`.
 
 Malformed ECS JSON fails by default. `--set ingest.ignore_errors=true` permits DuckDB's tolerant reader, with invalid/missing-time/host rows quarantined when represented by the reader. Adapter rejections retain source/line/reason diagnostics. Inspect metrics before trusting a run.
 

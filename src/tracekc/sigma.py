@@ -44,7 +44,19 @@ FIELD_MAP = {
     "winlog.event_id": "win_event_id", "EventID": "win_event_id",
     "winlog.logon.type": "logon_type", "LogonType": "logon_type",
     "labels_extra.failed_count_5min": "failed_count", "labels_extra.files_renamed_60s": "renamed_count",
+    "group.name": "win_group",
 }
+# Windows Security / Directory Service event data, by Sigma name and by Winlogbeat ECS path.
+_WINDOWS_EVENT_DATA = {
+    "ServiceName": "win_service", "TicketEncryptionType": "win_ticket_enc", "TicketOptions": "win_ticket_options",
+    "Status": "win_status", "PreAuthType": "win_preauth", "Properties": "win_properties",
+    "AccessMask": "win_access_mask", "ObjectDN": "win_object_dn", "ObjectName": "win_object_dn",
+    "ObjectClass": "win_object_class", "AttributeLDAPDisplayName": "win_attribute",
+    "AttributeValue": "win_attr_value", "OperationType": "win_operation", "SubjectUserName": "win_subject_user",
+    "MemberName": "win_member", "ServicePrincipalNames": "win_spns",
+}
+FIELD_MAP.update(_WINDOWS_EVENT_DATA)
+FIELD_MAP.update({f"winlog.event_data.{name}": col for name, col in _WINDOWS_EVENT_DATA.items()})
 NUMERIC_COLS = {"src_port", "dst_port", "net_bytes", "proc_pid", "parent_pid", "win_event_id",
                 "failed_count", "renamed_count", "file_size"}
 
@@ -413,8 +425,16 @@ def relation_sql(rule_id: str, rules: dict[str, Rule], cap: int, _stack=()) -> s
         agg_others = ", ".join(f"CASE WHEN count(DISTINCT {x}) = 1 THEN min({x}) END AS {x}" for x in others)
         if c["type"] == "event_count":
             having = f"max(win) {c['op']} {c['threshold']}"
-        else:
+        elif c["field"] in ENTITY_COLS:
             having = f"count(DISTINCT {c['field']}) {c['op']} {c['threshold']}"
+        else:
+            # Non-entity field (e.g. Kerberos ServiceName): look it up on the single source event.
+            for x in c["rules"]:
+                if rules[x].kind != "base":
+                    raise SigmaError(f"{rule_id}: value_count on {c['field']} needs single-event rules, not {x}")
+            inner = (f"SELECT r.*, e.{c['field']} AS corr_value FROM ({inner}) r "
+                     f"JOIN (SELECT event_id, {c['field']} FROM ev) e ON e.event_id = r.event_ids[1]")
+            having = f"count(DISTINCT corr_value) {c['op']} {c['threshold']}"
         span = c["span_ms"]
         return f"""
 SELECT {gsel}min(ts_first_ms) AS ts_first_ms, max(ts_last_ms) AS ts_last_ms,
