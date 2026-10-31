@@ -1,7 +1,7 @@
 'use client';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
-import { use, useState } from 'react';
+import { use, useEffect, useState } from 'react';
 import { ArrowLeft, BookOpen, Clock, Layers, Link2, Network, Radar, ShieldAlert, Users } from 'lucide-react';
 import { useApi } from '@/lib/api';
 import type { AIStatus, Incident } from '@/lib/types';
@@ -23,6 +23,10 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
   const { data: inc, error, setData } = useApi<Incident>(`/incidents/${id}`);
   const { data: ai } = useApi<AIStatus>('/ai/status');
   const [tab, setTab] = useState<Tab>('story');
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get('tab');
+    if (requested && ['story', 'graph', 'predict', 'respond'].includes(requested)) setTab(requested as Tab);
+  }, [id]);
   const [path, setPath] = useState<string[]>([]);
   const [source, setSource] = useState('');
   const [target, setTarget] = useState('');

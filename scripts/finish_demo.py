@@ -43,4 +43,3 @@ run('-m','tracekc','export-history','--out',str(root),'--save',str(root/'histori
 run('-m','tracekc','forecast-benchmark','--input',str(root/'histories.json'),'--out',str(root/'forecast-comparison.json'),'--model-out',str(root/'forecast-model.json'))
 run('-m','tracekc','attach-forecast','--out',str(root),'--model',str(root/'forecast-model.json'))
 run('scripts/demo_smoke.py','--out',str(root))
-run('scripts/streamlit_smoke.py','--out',str(root))

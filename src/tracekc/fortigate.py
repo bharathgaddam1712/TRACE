@@ -1,9 +1,10 @@
 """Native, parallel DuckDB FortiGate key=value reader. No Python loop over millions of lines."""
 from tracekc.engine import run
 from tracekc.sigma import lit
+import json
 
 
-def raw_view(con, source, columns, maximum, identity_source=None):
+def raw_view(con, source, columns, maximum, identity_source=None, token_source=None):
     identity = lit(str(identity_source or source))
     pattern = r'([a-zA-Z0-9_]+)=("(?:[^"\\]|\\.)*"|[^ \r\n]+)'
     parsed = f"""SELECT line, filename,
@@ -12,6 +13,40 @@ def raw_view(con, source, columns, maximum, identity_source=None):
             value := trim(substr(x, length(split_part(x, '=', 1)) + 2), '"')))) AS kv
         FROM read_csv({lit(source)}, columns={{'line':'VARCHAR'}}, delim=chr(31), quote='', escape='',
           header=false, filename=true, auto_detect=false, strict_mode=false, new_line='\\n', max_line_size={maximum}, compression='auto', parallel=true) WHERE length(trim(line)) > 0"""
+    if token_source is not None:
+        from tracekc.native_reader import field_names, TokenBuffer
+        keys = field_names()
+        fields = ', '.join(f'{lit(k)}: \'VARCHAR\'' for k in ['line']+keys)
+        struct = ', '.join(f'"{k}" := "{k}"' for k in keys)
+        observed_line = token_source.max_line_bytes if isinstance(token_source,TokenBuffer) else json.loads(token_source.with_suffix('.meta.json').read_text(encoding='utf-8'))['max_line_bytes']
+        line_limit = max(4096, observed_line+2)
+        buffer_size = max(8*1024*1024, line_limit*4)
+        parsed = f'''SELECT line, _source_file AS filename, struct_pack({struct}) AS kv
+            FROM read_csv({lit(token_source)}, columns={{{fields}}}, header=false,
+              delim=',', quote='"', escape='"', filename='_source_file', auto_detect=false,
+              nullstr='', allow_quoted_nulls=false, max_line_size={line_limit}, buffer_size={buffer_size}, parallel=true)
+            WHERE length(trim(line)) > 0'''
+        token_format=token_source.format if isinstance(token_source,TokenBuffer) else json.loads(token_source.with_suffix('.meta.json').read_text(encoding='utf-8')).get('format','csv')
+        if isinstance(token_source,TokenBuffer) and token_format=='csv':
+            token_source.relation=con.read_csv(token_source.stream,columns={k:'VARCHAR' for k in ['line']+keys},
+                header=False,delimiter=',',quotechar='"',escapechar='"',na_values='',
+                auto_detect=False,
+                allow_quoted_nulls=False,max_line_size=line_limit,buffer_size=buffer_size,
+                parallel=True)
+            token_source.relation.create_view('_trace_native_tokens',replace=True)
+            parsed=f'''SELECT line, {identity} AS filename, struct_pack({struct}) AS kv
+                FROM _trace_native_tokens WHERE length(trim(line))>0'''
+        if token_format=='json':
+            schema='STRUCT('+', '.join(f'"{k}" VARCHAR' for k in keys)+')'
+            if isinstance(token_source,TokenBuffer):
+                token_source.relation=con.read_json(token_source.stream,columns={'line':'VARCHAR','kv':schema},
+                    format='newline_delimited',maximum_object_size=line_limit)
+                token_source.relation.create_view('_trace_native_tokens',replace=True)
+                parsed=f'SELECT line, {identity} AS filename, kv FROM _trace_native_tokens WHERE length(trim(line))>0'
+            else:
+                parsed=f'''SELECT line,filename,kv FROM read_json({lit(token_source)},
+                    format='newline_delimited',columns={{'line':'VARCHAR','kv':{lit(schema)}}},
+                    filename=true,ignore_errors=false,maximum_object_size={line_limit}) WHERE length(trim(line))>0'''
     ip = "CASE WHEN kv['srcintfrole'] IN ('lan','dmz') OR is_internal(kv['srcip']) THEN kv['srcip'] WHEN kv['dstintfrole'] IN ('lan','dmz') OR is_internal(kv['dstip']) THEN kv['dstip'] END"
     auth = "kv['action'] IN ('login','logout','ssl-login-fail','tunnel-up','tunnel-down') OR lower(coalesce(kv['logdesc'],'')) LIKE '%login%'"
     action = f"CASE WHEN {auth} THEN 'user_logon' WHEN kv['subtype']='dns' THEN 'dns_query' WHEN kv['type']='traffic' OR kv['subtype'] IN ('ips','app-ctrl','webfilter','virus') THEN 'network_connection' ELSE coalesce(kv['action'],'firewall_event') END"

@@ -19,7 +19,7 @@ async function showEvidence(id) {
 async function refresh() {
   const version = ++loadVersion;
   try {
-    const query = new URLSearchParams({q:$('#search').value, min_score:$('#min-score').value || '0', status:$('#status-filter').value, limit:'1000'});
+    const query = new URLSearchParams({q:$('#search').value, min_score:$('#min-score').value || '0', status:$('#status-filter').value});
     const [rows, health, progress, metrics, ai] = await Promise.all([api('/incidents?' + query), api('/health'), api('/progress'), api('/metrics'), api('/ai/status')]);
     if (version !== loadVersion) return;
     aiStatus = ai;
@@ -28,7 +28,6 @@ async function refresh() {
     const quality = metrics.ingest || {};
     $('#quality').textContent = quality.events === undefined ? 'No completed run yet' : `${(quality.valid_events ?? quality.events).toLocaleString()} valid events · ${quality.quarantined_rows} parsed rows quarantined · ${(quality.adapter_rejected_records || 0) + (quality.reader_rejected_records || 0)} rejected input line fragments · ${((quality.reader_rejected_bytes || 0)/1048576).toFixed(1)} MiB rejected · ${quality.reused_files || 0} cached files`;
     $('#list').innerHTML = rows.map(row => `<button class="incident ${current?.id === row.id ? 'selected':''}" data-id="${row.id}"><strong>${esc(row.score)}/100</strong> · ${esc(row.status)}<div>${esc(row.title)}</div><small>${row.signal_count} steps · ${row.merged_alert_count} merged alerts</small><small>${esc(row.first_seen)}</small></button>`).join('') || '<p class="muted">No incidents match these filters. Isolated detections remain available in Findings.</p>';
-    $('#load-more').hidden=rows.length<1000;
     $('#list').querySelectorAll('[data-id]').forEach(button => button.addEventListener('click', () => showIncident(Number(button.dataset.id))));
     if (!current && rows.length) await showIncident(rows[0].id);
   } catch (error) { $('#health').textContent = error.message; $('#health').className = 'error'; }
@@ -117,10 +116,9 @@ async function askAI() {
   catch(error){if(current===inc)$('#ai-response').textContent=error.message;}
   finally{if(current===inc)button.disabled=false;}
 }
-async function loadFindings() { try{const findings=await api('/findings?limit=100');$('#findings-content').innerHTML=`<p>${findings.total_isolated_signals || 0} isolated signals; showing up to 100.</p><div class="scroll"><table><tr><th>Time</th><th>Detection</th><th>Host</th><th>Technique</th></tr>${(findings.findings || []).map(f=>`<tr><td>${esc(f.ts)}</td><td>${esc(f.title)}</td><td>${esc(f.host)}</td><td>${esc(f.technique || 'Unmapped')}</td></tr>`).join('')}</table></div>`;}catch(error){if($('#findings-content'))$('#findings-content').textContent=error.message;} }
+async function loadFindings() { try{const findings=await api('/findings');$('#findings-content').innerHTML=`<p>${findings.total_isolated_signals || 0} isolated signals; ${(findings.findings || []).length} saved preview rows. Complete signals are retained in signals.parquet.</p><div class="scroll"><table><tr><th>Time</th><th>Detection</th><th>Host</th><th>Technique</th></tr>${(findings.findings || []).map(f=>`<tr><td>${esc(f.ts)}</td><td>${esc(f.title)}</td><td>${esc(f.host)}</td><td>${esc(f.technique || 'Unmapped')}</td></tr>`).join('')}</table></div>`;}catch(error){if($('#findings-content'))$('#findings-content').textContent=error.message;} }
 function download(name,text,type) { const url=URL.createObjectURL(new Blob([text],{type:type+';charset=utf-8'}));const link=document.createElement('a');link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000); }
 $('#close-evidence').addEventListener('click',()=>$('#evidence-dialog').close());
-$('#load-more').addEventListener('click',loadMoreIncidents);
 $('#refresh').addEventListener('click',()=>{current=null;refresh();});
 $('#connect').addEventListener('click',()=>{token=$('#api-token').value.trim();sessionStorage.setItem('trace-token',token);current=null;refresh();});
 let debounce;$('#search').addEventListener('input',()=>{clearTimeout(debounce);debounce=setTimeout(refresh,250);});
@@ -165,9 +163,4 @@ async function loadTemporalComparison() {
     if (!data.test) {panel.textContent=data.reason;return;}
     panel.innerHTML=`<h3>Temporal network interaction experiment</h3><p class="notice">These scores measure observed network interactions against sampled alternatives. They are not attack detection or attack-success accuracy.</p><p>Selected on validation: ${esc(data.selected_on_validation)}. ${esc(data.events)} chronological interactions.</p><table><tr><th>Model</th><th>Test MRR</th><th>Hits@1</th><th>Hits@3</th></tr>${Object.entries(data.test).map(([name,result])=>`<tr><td>${esc(name)}</td><td>${Number(result.mrr ?? 0).toFixed(3)}</td><td>${Number(result.hits1 ?? 0).toFixed(3)}</td><td>${Number(result.hits3 ?? 0).toFixed(3)}</td></tr>`).join('')}</table><details><summary>Evaluation protocol and limitations</summary><pre>${esc(JSON.stringify({protocol:data.protocol,negative_sampling:data.negative_sampling,cold_pair_test:data.cold_pair_test,limitations:data.limitations},null,2))}</pre></details>`;
   } catch(error) {panel.textContent=error.message;}
-}
-async function loadMoreIncidents() {
-  const version=loadVersion;$('#load-more').disabled=true;
-  try{const offset=$('#list').querySelectorAll('[data-id]').length;const query=new URLSearchParams({q:$('#search').value,min_score:$('#min-score').value || '0',status:$('#status-filter').value,limit:'1000',offset:String(offset)});const rows=await api('/incidents?'+query);if(version!==loadVersion)return;for(const row of rows){const button=document.createElement('button');button.className='incident';button.dataset.id=row.id;button.innerHTML=`<strong>${esc(row.score)}/100</strong> · ${esc(row.status)}<div>${esc(row.title)}</div><small>${row.signal_count} steps · ${row.merged_alert_count} alerts</small>`;button.addEventListener('click',()=>showIncident(row.id));$('#list').append(button);}$('#load-more').hidden=rows.length<1000;}
-  catch(error){$('#health').textContent=error.message;}finally{$('#load-more').disabled=false;}
 }

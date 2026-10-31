@@ -5,11 +5,14 @@
 engine:
   memory_limit: "5GB"        # DuckDB buffer cap; spills to temp_directory beyond this
   threads: 0                 # 0 = conservative auto (up to 4); benchmark larger counts
+  blocking_threads: 4        # cap concurrent sort/join work to avoid RAM oversubscription
+  blocking_memory_limit: null # optional separate buffer budget for the deduplication sort
   temp_directory: "work/duckdb_tmp"
   max_temp_directory_size: "20GB"
   profile_queries: false     # opt-in query-shape wall-time totals; excludes SQL literals
 
 ingest:
+  threads: 4                # CSV/JSON workers; larger counts can reduce local throughput
   # File patterns searched recursively under --input. Gzip is detected automatically.
   patterns: ["*.json", "*.ndjson", "*.jsonl", "*.log", "*.csv", "*.syslog", "*.json.gz", "*.ndjson.gz", "*.jsonl.gz", "*.log.gz", "*.csv.gz"]
   format: auto               # auto, ecs, csv, syslog (RFC5424 or ISO-timestamp syslog)
@@ -19,6 +22,12 @@ ingest:
   incremental: true          # cache unchanged files; changed/appended files are reprocessed
   maximum_object_size: 16777216
   dedupe_events: true        # drop duplicate event ids (duplicate ingestion)
+  native_fortigate: true     # optional gcc/clang lexer; portable DuckDB fallback when absent
+  native_prefetch: true      # overlap one bounded native lexer chunk with SQL normalization
+  native_in_memory: false    # optional bounded RAM handoff; default uses disk-backed sparse JSON
+  native_format: json        # sparse typed key/value records avoid parsing absent CSV fields
+  materialize_resolved_events: true # resolve process/IP joins once for large inputs
+  resolved_materialize_min_rows: 1000000
 
 # Address space treated as "inside the organisation". Everything else is external.
 internal_networks:

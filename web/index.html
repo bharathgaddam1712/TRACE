@@ -14,7 +14,7 @@
 <h1>Investigations</h1>
 <label>Search host, user or incident<input id="search" type="search" placeholder="Search incidents…"></label>
 <div class="filters"><label>Min. risk<input id="min-score" type="number" min="0" max="100" value="0"></label><label>Status<select id="status-filter"><option value="">All statuses</option><option>new</option><option>investigating</option><option>contained</option><option>closed</option></select></label></div>
-<div id="list" aria-label="Incident list"></div><button id="load-more" hidden>Load more incidents</button>
+<div id="list" aria-label="Incident list"></div>
 <details><summary>API connection</summary><label>Bearer token (if configured)<input id="api-token" type="password" autocomplete="off"></label><button id="connect">Connect</button></details>
 </aside>
 <article id="workspace"><div class="empty"><h2>Follow the evidence.</h2><p>Select an incident to inspect its timeline, relationships and possible next targets.</p></div></article>

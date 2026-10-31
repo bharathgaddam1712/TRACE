@@ -1,7 +1,9 @@
 'use client';
 import { Crosshair, Info, Route, Sparkles } from 'lucide-react';
+import Link from 'next/link';
+import { useApi } from '@/lib/api';
 import type { Incident } from '@/lib/types';
-import { Card, CardHeader, Chip, Empty, Mono, cx } from '@/components/ui';
+import { Card, CardHeader, Chip, Empty, ErrorBox, KV, Mono, Skeleton, cx } from '@/components/ui';
 
 const CONF = { high: '#b8432f', medium: '#c9902f', low: '#8a8780' } as const;
 
@@ -42,27 +44,71 @@ export function NextTechnique({ incident }: { incident: Incident }) {
   const f = incident.forecast;
   const candidates = f?.candidates ?? [];
   return (
+    <div className="space-y-5">
+    <PredictionModel />
     <Card>
       <CardHeader icon={<Sparkles className="size-4" />} title="Likely next technique" subtitle="Learned from past incidents' technique sequences (time-bounded, no future data)" />
       {!f || (f.status !== 'available' && !candidates.length) ? (
         <Empty title="Forecast not available for this run">
-          {f?.reason ?? 'No forecast was produced.'} Train one with <Mono>tracekc train-forecast</Mono> on historical incidents, then <Mono>tracekc attach-forecast</Mono>.
+          {f?.reason ?? 'No forecast was produced.'} Model details and an eligible example, when available, are shown above.
         </Empty>
       ) : (
         <div className="px-5 pb-5 space-y-2">
           {candidates.slice(0, 6).map((c, i) => {
-            const share = Math.round((c.historical_share ?? 0) * 100);
+            const share = c.historical_share === undefined ? null : Math.round(c.historical_share * 100);
             return (
               <div key={c.technique} className="flex items-center gap-3">
                 <span className="w-5 text-right text-xs tabular-nums text-fg-subtle">{i + 1}</span>
                 <Chip tone="brand">{c.technique}</Chip>
-                <div className="h-2 flex-1 overflow-hidden rounded-full bg-ink-700"><div className="h-full rounded-full bg-gradient-to-r from-brand to-brand-2" style={{ width: `${Math.max(share, 3)}%` }} /></div>
-                <span className="w-10 text-right text-xs tabular-nums text-fg-muted">{share}%</span>
+                {share === null ? <span className="flex-1 text-xs text-fg-subtle">Ranked by historical support</span> : <div className="h-2 flex-1 overflow-hidden rounded-full bg-ink-700"><div className="h-full rounded-full bg-gradient-to-r from-brand to-brand-2" style={{ width: `${Math.max(share, 3)}%` }} /></div>}
+                <span className="w-16 text-right text-xs tabular-nums text-fg-muted">{share === null ? `rank ${i + 1}` : `${share}% share`}</span>
               </div>
             );
           })}
           {f.sequences?.slice(0, 3).map((s, i) => <div key={i} className="text-xs text-fg-subtle">Path: {s.techniques.join(' → ')}</div>)}
+          {f.reason && <p className="text-xs text-med">{f.reason}</p>}
           {f.interpretation && <p className="pt-2 text-xs text-fg-subtle">{f.interpretation}</p>}
+        </div>
+      )}
+    </Card>
+    </div>
+  );
+}
+
+
+type ModelSummary = {
+  status: string; reason?: string; selected_model?: string; training_until?: string;
+  training_incidents?: number; label_source?: string; eligible_incidents?: number;
+  example_incident_id?: number | null; warnings?: string[];
+  test?: Record<string, { transitions?: number; coverage?: number; top1?: number; mrr?: number }>;
+};
+
+export function PredictionModel() {
+  const { data: model, error } = useApi<ModelSummary>('/forecast/model');
+  if (error) return <ErrorBox error={error} />;
+  if (!model) return <Skeleton className="h-44" />;
+  const score = model.selected_model ? model.test?.[model.selected_model] : undefined;
+  return (
+    <Card>
+      <CardHeader icon={<Sparkles className="size-4" />} title="Prediction model"
+        subtitle="Chronological model comparison · historical technique sequences" />
+      {model.status !== 'available' ? <Empty title="No fitted model">{model.reason}</Empty> : (
+        <div className="px-5 pb-5 space-y-3">
+          <KV rows={[
+            ['Selected algorithm', model.selected_model ?? '—'],
+            ['Training incidents', model.training_incidents ?? '—'],
+            ['Training cutoff', model.training_until ?? '—'],
+            ['Labels', model.label_source ?? 'unspecified'],
+            ['Eligible incident forecasts', model.eligible_incidents ?? 0],
+            ['Held-out transitions', score?.transitions ?? '—'],
+          ]} />
+          {score?.top1 !== undefined && <p className="text-xs text-fg-muted">Held-out label agreement: {(score.top1 * 100).toFixed(1)}%. Agreement with inferred labels does not establish attack-prediction accuracy.</p>}
+          {model.warnings?.map((warning) => <p key={warning} className="text-xs text-med">{warning}</p>)}
+          <div className="flex flex-wrap gap-4 text-xs font-medium text-brand">
+            <a href="/api/forecast/model/download" download="forecast-model.json">Download fitted model JSON</a>
+            {model.example_incident_id != null && <Link href={`/incidents/${model.example_incident_id}?tab=predict`}>Open an eligible prediction</Link>}
+          </div>
+          <p className="text-xs text-fg-subtle">Earlier incidents cannot use a model trained on later evidence. This model forecasts techniques; the separate temporal experiment ranks network interactions.</p>
         </div>
       )}
     </Card>

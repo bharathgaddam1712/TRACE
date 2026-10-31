@@ -4,29 +4,41 @@ Use Python 3.12+ for the pinned optional temporal ML dependencies. The core pack
 retains its separate Python requirement. No Neo4j, GPU, Sarvam key or Docker is
 required for this demo.
 
-## Streamlit app (local presentation)
+## Next.js console (latest master UI)
+
+Install/build once, then launch the API and console together:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[demo,temporal]"
-.\scripts\start_streamlit.ps1
+cd frontend
+npm ci
+npm run build
+cd ..
+.\.venv\Scripts\python.exe scripts/start_web.py
 ```
 
-Open http://127.0.0.1:8501. The seven tabs expose ingestion and quality accounting,
-detection inventory, ATT&CK reasons, correlation links, bounded graphs and temporal
-path search, sequence forecasts, evidence, reports, analyst history and optional
-Sarvam tasks. Select **Only incidents after model training cutoff** to demonstrate
-eligible forecasts. Earlier incidents intentionally cannot use that model.
+Open http://127.0.0.1:3000. The API is at http://127.0.0.1:8001. The launcher uses
+the optimized local results by default, binds both servers to localhost, and writes
+logs/PIDs under the output folder. Use `--out FULL_PATH` for another completed run.
+The server proxy keeps API credentials out of browser code. Ports must be free.
+The API loads incident details on request and retains a bounded cache of 16
+incidents/graphs; every incident remains available in the complete queue.
 
-The app reads saved results without restarting ingestion on widget interactions.
-During processing it shows progress. `scripts/demo.ps1` builds/rebuilds the full
-results and models; use it before presenting or after changing pipeline behavior.
-The two UI launchers can run independently; Streamlit does not require the FastAPI
-server. The Sarvam key stays in the ignored root `.env`.
+## Build full-file results
+
+Install the optional ML dependencies once:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[temporal]"
+```
+
+The Next.js console reads saved results through the API. Run the pipeline before
+presenting or after changing pipeline behavior. The Sarvam key stays in the
+ignored root `.env`.
 
 ```powershell
 .\scripts\setup.ps1
 .\scripts\demo.ps1
-.\.venv\Scripts\python.exe -m tracekc serve --out out/firex-full-demo --port 8001
+.\.venv\Scripts\python.exe scripts/start_web.py
 ```
 
 The default source is the complete local file
@@ -34,11 +46,31 @@ The default source is the complete local file
 `-LogPath "FULL_PATH"`. No sample extraction or Git LFS download is required for
 the full-file demo. The source stays outside the repository.
 
-Open http://127.0.0.1:8001. The script runs all seven
+Results, chunk caches and DuckDB spill files now default to `%LOCALAPPDATA%\TRACE`,
+outside OneDrive. `-Threads` defaults to four workers; `-Memory` defaults
+to a 2 GB DuckDB buffer limit. The process can use more memory than that buffer.
+Spill is capped at the smaller of 120 GB or 60% of currently free output-drive space;
+this cap does not preallocate or fill the drive. Benchmark thread counts on the demo
+machine because more workers can increase paging.
+
+The optional FortiGate lexer builds locally with `gcc` or `clang` on PATH. Without
+either compiler, TRACE retains the portable DuckDB regex reader. The C source is
+included in the package; generated executables stay in the output cache. Each chunk
+keeps its original line for event IDs, and malformed chunks use the existing byte
+quarantine path. No downloaded binary or raw-log upload is required.
+
+`demo_timings.json` records the complete pipeline, forecast fit/evaluation, model
+attachment and optional network ML experiment. Its `under_seven_minutes` field is a
+measured outcome, not a runtime guarantee. `forecast-comparison.json` also records
+initial and final fitting time separately. The temporal experiment remains capped
+at `-MaxTemporalEvents` (100,000 by default); reading, detection and incident assembly
+process the complete input.
+
+Open http://127.0.0.1:3000. The pipeline script runs all seven
 stages, performs a causal network interaction experiment, exports inferred incident
 histories, benchmarks technique models, then attaches
 sequence hypotheses only to incidents after the model's training cutoff. Model
-attachment updates saved incidents directly; it does not repeat ingestion or detection.
+attachment publishes a fingerprint-checked forecast sidecar; it does not repeat ingestion or detection.
 
 ## What to demonstrate
 

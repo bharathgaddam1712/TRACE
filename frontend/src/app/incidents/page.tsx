@@ -11,7 +11,7 @@ type Sort = 'score' | 'recent' | 'steps';
 const STATUS_TONE: Record<string, string> = { new: 'text-brand-2', investigating: 'text-med', contained: 'text-high', closed: 'text-low' };
 
 export default function IncidentsPage() {
-  const { data, error, loading } = useApi<IncidentRow[]>('/incidents?limit=1000', 30000);
+  const { data, error, loading } = useApi<IncidentRow[]>('/incidents', 30000);
   const [q, setQ] = useState('');
   const [minScore, setMinScore] = useState(0);
   const [tactic, setTactic] = useState('');

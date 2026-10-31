@@ -2,7 +2,7 @@ export const compact = new Intl.NumberFormat('en', { notation: 'compact', maximu
 export const number = new Intl.NumberFormat('en');
 
 export function bytes(n = 0) {
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
   let i = 0;
   while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
   return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;

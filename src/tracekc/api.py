@@ -4,7 +4,10 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import hashlib
 import threading
+from collections import OrderedDict
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -27,11 +30,14 @@ class Store:
         self.lock = threading.Lock()
         self.mtime = None
         self.index = []
-        self.incidents = {}
+        self.incidents = OrderedDict()
+        self.by_id = {}
+        self.cache_limit = 16
         self.findings = {}
         self.metrics = {}
         self.relationships = {}
-        self.graph_indexes = {}
+        self.forecasts = {}
+        self.graph_indexes = OrderedDict()
         self.refresh()
 
     def _read(self, name: str, default):
@@ -46,18 +52,40 @@ class Store:
         with self.lock:
             try:
                 rows = self._read('index.json', [])
-                incidents = {int(row['id']): self._read(f"incidents/{row['id']}.json", {}) for row in rows}
-                if any(not inc or row.get('fingerprint') != inc.get('fingerprint')
-                       for row, inc in ((row, incidents[int(row['id'])]) for row in rows)):
+                if any(not (self.out_dir/f"incidents/{row['id']}.json").is_file() for row in rows):
                     return  # never expose a partially published run
                 findings = self._read('findings.json', {})
                 metrics = self._read('run_metrics.json', {})
                 relationships = self._read('relationships.json', {'links':[]})
+                forecasts=self._read('forecasts.json',{})
+                if forecasts.get('index_sha256')!=hashlib.sha256(index.read_bytes()).hexdigest():forecasts={}
             except (OSError, ValueError):
                 return  # retain the last complete snapshot while a writer publishes
-            self.index, self.incidents = rows, incidents
+            self.index, self.incidents = rows, OrderedDict()
+            self.by_id = {int(row['id']):row for row in rows}
             self.findings, self.metrics, self.mtime = findings, metrics, signature
-            self.relationships, self.graph_indexes = relationships, {}
+            self.relationships, self.graph_indexes = relationships, OrderedDict()
+            self.forecasts=forecasts.get('predictions',{})
+
+    def incident(self, inc_id):
+        self.refresh()
+        with self.lock:
+            row=self.by_id.get(inc_id)
+            if row is None:return None
+            if inc_id not in self.incidents:
+                value=self._read(f'incidents/{inc_id}.json',{})
+                if not value or value.get('fingerprint')!=row.get('fingerprint'):
+                    raise HTTPException(503,'Results are being published; retry after the pipeline completes')
+                self.incidents[inc_id]=value
+            self.incidents.move_to_end(inc_id)
+            while len(self.incidents)>self.cache_limit:
+                old,_=self.incidents.popitem(last=False)
+                self.graph_indexes.pop(old,None)
+            incident=self.incidents[inc_id]
+            prediction=self.forecasts.get(str(inc_id),{})
+            if prediction.get('fingerprint')==incident.get('fingerprint'):
+                return {**incident,'forecast':prediction['forecast']}
+            return incident
 
 
 def create_app(out_dir: Path, ai_service=None) -> FastAPI:
@@ -98,7 +126,7 @@ def create_app(out_dir: Path, ai_service=None) -> FastAPI:
 
     def get(inc_id):
         store.refresh()
-        incident = store.incidents.get(inc_id)
+        incident = store.incident(inc_id)
         if incident is None:
             raise HTTPException(404, 'Incident not found')
         return incident
@@ -121,9 +149,41 @@ def create_app(out_dir: Path, ai_service=None) -> FastAPI:
     def progress():
         return store._read('progress.json', {'state': 'idle', 'stage': 'waiting_for_run'})
 
+    @app.get('/demo/timings')
+    def demo_timings():
+        path=out_dir/'demo_timings.json'
+        if not path.exists():return {'status':'unavailable','run_name':out_dir.name}
+        result=store._read('demo_timings.json',{})
+        return {**result,'run_name':out_dir.name,
+                'published_at':datetime.fromtimestamp(path.stat().st_mtime,timezone.utc).isoformat()}
+
     @app.get('/graph/config')
     def graph_config():
         return {'backend':'neo4j' if neo else 'local','max_depth':max_depth,'default_depth':default_depth}
+
+    @app.get('/forecast/model')
+    def forecast_model():
+        store.refresh()
+        model=store._read('forecast-model.json',None)
+        if not model:
+            return {'status':'unavailable','reason':'No fitted model has been published for this run.'}
+        comparison=model.get('benchmark',{})
+        eligible=[int(key) for key,value in store.forecasts.items()
+                  if int(key) in store.by_id and value.get('fingerprint')==store.by_id[int(key)].get('fingerprint')
+                  and value.get('forecast',{}).get('status')=='estimated']
+        return {'status':'available','selected_model':model.get('selected_model',model.get('method')),
+                'training_until':model.get('training_until'),'training_incidents':model.get('training_incidents'),
+                'label_source':model.get('label_source','unspecified'),
+                'counts':comparison.get('counts',{}),'test':comparison.get('test',{}),
+                'warnings':comparison.get('warnings',[]),'eligible_incidents':len(eligible),
+                'example_incident_id':min(eligible) if eligible else None,
+                'download_url':'/forecast/model/download'}
+
+    @app.get('/forecast/model/download')
+    def download_forecast_model():
+        model=store._read('forecast-model.json',None)
+        if not model:raise HTTPException(404,'No fitted model has been published for this run')
+        return JSONResponse(model,headers={'Content-Disposition':'attachment; filename="forecast-model.json"'})
 
     @app.get('/forecast/benchmark')
     def forecast_benchmark():
@@ -143,7 +203,7 @@ def create_app(out_dir: Path, ai_service=None) -> FastAPI:
 
     @app.get('/incidents')
     def incidents(q: str = Query('', max_length=200), min_score: float = Query(0, ge=0, le=100),
-                  tactic: str = '', status: str = '', limit: int = Query(100, ge=1, le=1000), offset: int = Query(0, ge=0)):
+                  tactic: str = '', status: str = '', limit: int | None = Query(None, ge=1), offset: int = Query(0, ge=0)):
         store.refresh()
         rows = []
         statuses = cases.statuses()
@@ -156,7 +216,7 @@ def create_app(out_dir: Path, ai_service=None) -> FastAPI:
             if status and case_status != status:
                 continue
             rows.append({**row, 'status': case_status})
-        return rows[offset:offset + limit]
+        return rows[offset:] if limit is None else rows[offset:offset + limit]
 
     @app.get('/incidents/{inc_id}')
     def incident(inc_id: int):
@@ -172,6 +232,9 @@ def create_app(out_dir: Path, ai_service=None) -> FastAPI:
                     store.graph_indexes[inc_id]=GraphIndex(neo.load_graph(inc['fingerprint']) if neo else inc['graph'])
                 except Exception:
                     raise HTTPException(503,'Neo4j graph unavailable; verify connectivity and run graph-sync') from None
+            store.graph_indexes.move_to_end(inc_id)
+            while len(store.graph_indexes)>store.cache_limit:
+                store.graph_indexes.popitem(last=False)
             return store.graph_indexes[inc_id]
 
     @app.get('/incidents/{inc_id}/neighborhood')
@@ -295,7 +358,7 @@ def create_app(out_dir: Path, ai_service=None) -> FastAPI:
             raise HTTPException(exc.status, str(exc)) from None
 
     @app.get('/findings')
-    def findings(limit: int = Query(200, ge=1, le=2000)):
+    def findings(limit: int | None = Query(None, ge=1)):
         store.refresh()
         return {**store.findings, 'findings': store.findings.get('findings', [])[:limit]}
 

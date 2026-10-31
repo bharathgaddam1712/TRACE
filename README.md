@@ -1,12 +1,15 @@
 # TRACE: evidence-backed attack investigation
 
-Local Streamlit demo: install `pip install -e ".[demo,temporal]"`, then run
-`scripts/start_streamlit.ps1` and open http://127.0.0.1:8501. Build full-log results
-with `scripts/demo.ps1`; the UI shows progress while processing.
+The local UI is the Next.js console at http://127.0.0.1:3000. Build results with
+`scripts/demo.ps1`, build the frontend with `cd frontend; npm ci; npm run build`,
+then return to the repository root and run:
 
-SOC triage is available under **7 · Show**: campaign context, DuckDB history and
-duplicate candidates, structured Sarvam assessment, optional investigation,
-report drafts and explicit analyst review. See [triage architecture](docs/TRIAGE.md).
+```powershell
+.\.venv\Scripts\python.exe scripts/start_web.py
+```
+
+The launcher starts the API and console together. SOC triage is available in an
+incident's **Respond** tab. See [triage architecture](docs/TRIAGE.md).
 
 For the full-file local demo, bounded attacker-technique sequences,
 and causal temporal ML experiments, see [demo commands](docs/DEMO.md) and
@@ -26,10 +29,11 @@ Python 3.10+ is required. Run from the repository root:
 .\scripts\setup.ps1
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe scripts\validate_loop.py
-.\.venv\Scripts\python.exe -m tracekc serve --out out/sample-loop/planted
+.\.venv\Scripts\python.exe scripts/start_web.py --out out/sample-loop/planted
 ```
 
-Open http://127.0.0.1:8000. The sample loop exercises the shipped sample, a time-spread replay with a planted six-step attack, scoring, API, and cited evidence. It does not spend Sarvam credits.
+Build the Next.js frontend first (`cd frontend; npm ci; npm run build`), return to
+the repository root, then use the launcher above and open http://127.0.0.1:3000. The sample loop exercises the shipped sample, a time-spread replay with a planted six-step attack, scoring, API, and cited evidence. It does not spend Sarvam credits.
 
 Linux/macOS:
 
@@ -39,7 +43,7 @@ python3 -m venv .venv
 .venv/bin/pip install --no-deps -e .
 cp .env.example .env
 .venv/bin/python scripts/validate_loop.py
-.venv/bin/tracekc serve --out out/sample-loop/planted
+.venv/bin/python scripts/start_web.py --out out/sample-loop/planted
 ```
 
 ## Web console (Next.js)

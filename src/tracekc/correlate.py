@@ -35,25 +35,26 @@ def build_signals(con, cfg: dict, suppressions: list[dict]) -> dict:
     fp = ("md5(concat_ws('|', coalesce(technique, rule_id), host, user_name, src_ip, dst_ip, dst_domain, "
           "json_extract_string(evidence, '$.cmd'), json_extract_string(evidence, '$.registry'), "
           "json_extract_string(evidence, '$.file')))")
-    # Recurrence (scheduled-job / alert-fatigue control): the same alert fingerprint - rule, account,
-    # host, addresses, command line, registry key - appearing in many separate time buckets is baseline
-    # behaviour, not a one-off attack step. Counted per detection so that a pattern repeating more often
-    # than the dedupe window is still seen in every bucket it occurs in.
+    # Sort only row references, entity keys and timestamps. Evidence JSON, lists
+    # and mapping descriptions are joined back after session assignment, so the
+    # two temporal windows never carry the full detection payload through spill.
     run(con, f"""
-        CREATE OR REPLACE TABLE recurrence AS
-        SELECT {fp} AS fingerprint, count(DISTINCT ts_first_ms // {bucket}) AS buckets
-        FROM labeled GROUP BY 1""")
-    # Signals: same technique + entities with gaps under dedupe_window_s, capped at one recurrence bucket
-    # so a signal never spans hours and an attack step cannot be absorbed into long-running repeated noise.
+        CREATE OR REPLACE TEMP TABLE signal_sessions AS
+        WITH d AS (SELECT rowid AS detection_row, det_id, ts_first_ms, ts_last_ms,
+                          coalesce(technique, rule_id) AS sig_key, host,user_name,src_ip,
+                          coalesce(dst_ip,dst_domain,'') AS dkey,
+                          ts_first_ms // {bucket} AS win, {fp} AS fingerprint FROM labeled),
+        o AS (SELECT *, CASE WHEN ts_first_ms - lag(ts_last_ms) OVER w > {dedupe} THEN 1 ELSE 0 END AS brk
+              FROM d WINDOW w AS (PARTITION BY {part} ORDER BY ts_first_ms, det_id))
+        SELECT detection_row,sig_key,dkey,win,fingerprint,
+               sum(brk) OVER (PARTITION BY {part} ORDER BY ts_first_ms,det_id ROWS UNBOUNDED PRECEDING) AS sess
+        FROM o""")
+    run(con,"""CREATE OR REPLACE TABLE recurrence AS
+        SELECT fingerprint,count(DISTINCT win) AS buckets FROM signal_sessions GROUP BY fingerprint""")
     run(con, f"""
         CREATE OR REPLACE TABLE signals AS
-        WITH d AS (SELECT *, coalesce(technique, rule_id) AS sig_key, coalesce(dst_ip, dst_domain, '') AS dkey,
-                          ts_first_ms // {bucket} AS win, {fp} AS fingerprint
-                   FROM labeled),
-        o AS (SELECT *, CASE WHEN ts_first_ms - lag(ts_last_ms) OVER w > {dedupe} THEN 1 ELSE 0 END AS brk
-              FROM d WINDOW w AS (PARTITION BY {part} ORDER BY ts_first_ms, det_id)),
-        s AS (SELECT *, sum(brk) OVER (PARTITION BY {part} ORDER BY ts_first_ms, det_id
-                                       ROWS UNBOUNDED PRECEDING) AS sess FROM o)
+        WITH s AS (SELECT d.*,r.sig_key,r.dkey,r.win,r.fingerprint,r.sess FROM labeled d
+                   JOIN signal_sessions r ON d.rowid=r.detection_row)
         SELECT row_number() OVER (ORDER BY min(ts_first_ms), sig_key, host, user_name, src_ip, dkey) AS signal_id,
                sig_key, host, user_name, src_ip,
                any_value(dst_ip) AS dst_ip, any_value(dst_domain) AS dst_domain,
@@ -81,6 +82,7 @@ def build_signals(con, cfg: dict, suppressions: list[dict]) -> dict:
                  FILTER (WHERE json_extract_string(evidence, '$.process_entity_id') IS NOT NULL) AS process_keys,
                NULL::VARCHAR AS suppressed_reason
         FROM s GROUP BY {part}, sess""")
+    run(con,"DROP TABLE signal_sessions")
     keymap = {"rule_id": "list_contains(rule_ids, {v})", "technique": "technique = {v}",
               "user": "user_name = lower({v})", "host": "host = upper({v})", "src_ip": "src_ip = {v}",
               "dst_ip": "dst_ip = {v}", "dst_domain": "dst_domain = lower({v})"}
@@ -165,12 +167,13 @@ def link_edges(con, cfg: dict) -> list[tuple[int, int, str]]:
         SELECT l.signal_id, c.signal_id, 'lateral' FROM lat l ASOF JOIN cand c
           ON l.host = c.host AND l.user_name = c.user_name AND l.ts_first_ms <= c.ts_first_ms
         WHERE c.ts_first_ms - l.ts_first_ms <= {gap}""")
-    from tracekc.graph_algorithms import link_decision
+    from tracekc.graph_algorithms import link_decision, signal_features
     signals = {s['signal_id']: s for s in dicts(con, 'SELECT signal_id, host, user_name, src_ip, dst_ip, technique, process_keys FROM linkable')}
+    features={key:signal_features(value) for key,value in signals.items()}
     accepted=[]
     for a,b,relation in rows:
         if a == b: continue
-        if link_decision(signals[a],signals[b],relation,c)['accepted']:
+        if link_decision(signals[a],signals[b],relation,c,features=(features[a],features[b]))['accepted']:
             accepted.append((int(a),int(b),relation))
     return sorted(set(accepted))
 
@@ -254,8 +257,9 @@ def score_incident(signals: list[dict], p: dict) -> tuple[bool, float, dict]:
 def assemble(con, cfg: dict, edges: list[tuple[int, int, str]]) -> tuple[list[list[dict]], list[list[dict]]]:
     """Return (promoted incident signal-groups sorted by score, isolated groups)."""
     c, p = cfg["correlation"], cfg["promotion"]
+    columns='signal_id,host,user_name,ts_first_ms,ts_last_ms,tactic,tactic_order,severity,recurrent,vendor_corroborated'
     signals = {s["signal_id"]: s for s in dicts(
-        con, f"SELECT {SIGNAL_COLS} FROM signals WHERE suppressed_reason IS NULL")}
+        con, f"SELECT {columns} FROM signals WHERE suppressed_reason IS NULL")}
     uf = _UF()
     for sid in signals:
         uf.find(sid)
@@ -271,8 +275,8 @@ def assemble(con, cfg: dict, edges: list[tuple[int, int, str]]) -> tuple[list[li
             sub.sort(key=lambda s: (s["ts_first_ms"], s["tactic_order"] or 99, s["signal_id"]))
             ok, score, detail = score_incident(sub, p)
             (promoted if ok else isolated).append((score, detail, sub))
-    promoted.sort(key=lambda x: (-x[0], x[2][0]["ts_first_ms"]))
-    isolated.sort(key=lambda x: (-x[0], x[2][0]["ts_first_ms"]))
+    promoted.sort(key=lambda x: (-x[0], x[2][0]["ts_first_ms"],x[2][0]['signal_id']))
+    isolated.sort(key=lambda x: (-x[0], x[2][0]["ts_first_ms"],x[2][0]['signal_id']))
     return promoted, isolated
 
 

@@ -61,10 +61,9 @@ Saved triage results include the grounding snapshot, elapsed time and model stag
 
 ## Demo
 
-In Streamlit, open **7 · Show → SOC triage workflow → Run triage agent**. The
-optional investigation checkbox controls the second model stage. Download the
-draft and record an analyst decision. The separate case-status form remains an
-explicit action. The configured Sarvam key and local daily budgets are reused.
+In the Next.js console, open an incident's **Respond** tab to run AI triage and
+review its evidence. Optional investigation and analyst review remain available
+through the API below. The configured Sarvam key and local daily budgets are reused.
 
 API endpoints:
 

@@ -15,7 +15,7 @@ function tally(lists: (string[] | undefined)[]) {
 
 export default function Overview() {
   const metrics = useApi<Metrics>('/metrics');
-  const incidents = useApi<IncidentRow[]>('/incidents?limit=1000');
+  const incidents = useApi<IncidentRow[]>('/incidents');
   if (metrics.error) return <ErrorBox error={metrics.error} />;
   const m = metrics.data;
   const rows = [...(incidents.data ?? [])].sort((a, b) => b.score - a.score);

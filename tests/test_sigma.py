@@ -72,3 +72,24 @@ def test_shipped_rules_load_cleanly():
     assert "trace-failed-logon" not in emit          # building block stays silent
     assert "trace-bruteforce-burst" in emit          # always_emit extension
     assert "trace-bruteforce-then-success" in emit
+
+
+@pytest.mark.parametrize('threads,reverse',[(1,False),(1,True),(4,False),(4,True)])
+def test_equal_timestamp_session_boundaries_are_independent_of_order(threads,reverse):
+    import duckdb
+    from tracekc.sigma import ENTITY_COLS,relation_sql
+    rules,_=load_rules(ROOT/'rules')
+    con=duckdb.connect();con.execute(f'SET threads={threads}')
+    entities=', '.join(f'{name} '+('BIGINT' if name=='proc_pid' else 'VARCHAR') for name in ENTITY_COLS)
+    con.execute(f'CREATE TABLE rule_hits(event_id VARCHAR,ts_ms BIGINT,{entities},hits VARCHAR[])').fetchall()
+    rows=[]
+    for batch,ts in enumerate((0,1200000)):
+        for index in range(10):
+            values={name:None for name in ENTITY_COLS};values.update(host='WS',user_name=f'user-{index}',src_ip='8.8.8.8')
+            rows.append([f'{batch}-{index}',ts,*[values[name] for name in ENTITY_COLS],['trace-failed-logon']])
+    if reverse:rows.reverse()
+    con.executemany('INSERT INTO rule_hits VALUES ('+','.join('?' for _ in rows[0])+')',rows)
+    query=relation_sql('trace-password-spray',rules,1000)
+    result=con.execute(f'SELECT ts_first_ms,event_count FROM ({query}) ORDER BY ts_first_ms').fetchall()
+    assert result==[(0,10),(1200000,10)]
+    con.close()

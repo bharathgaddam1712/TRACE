@@ -11,7 +11,7 @@ def anchor(path, offset):
     return [hashlib.sha256(first).hexdigest(),hashlib.sha256(tail).hexdigest()]
 
 
-def prepare(source, cache, work, reader_signature, maximum, chunk_bytes=None, allow_final=False):
+def prepare(source, cache, work, reader_signature, maximum, chunk_bytes=None, allow_final=False, copy_segment=True):
     identity=hashlib.sha256((str(source.resolve())+reader_signature).encode()).hexdigest()
     checkpoint=cache/(identity+'.checkpoint.json')
     before=source.stat();old={};start=0;prior=[]
@@ -22,31 +22,29 @@ def prepare(source, cache, work, reader_signature, maximum, chunk_bytes=None, al
             prior=[cache/name for name in candidate['shards']]
             if all(p.exists() for p in prior):old=candidate;start=cursor
             else:prior=[]
-    boundary=min(before.st_size,start+chunk_bytes) if chunk_bytes else before.st_size
-    with source.open('rb') as stream:
-        stream.seek(max(start,boundary-maximum-1));tail=stream.read(boundary-stream.tell())
-    newline=tail.rfind(b'\n')
-    end=max(start,boundary-len(tail)+newline+1) if newline>=0 else start
-    if allow_final and boundary==before.st_size:
-        end=boundary
-    if boundary-end>maximum:
-        raise ValueError(f'{source.name}: unterminated record exceeds maximum_object_size')
+    end=chunk_end(source,start,before.st_size,maximum,chunk_bytes,allow_final)
     result={'prior':prior,'checkpoint':checkpoint,'offset':end,'deferred_tail_bytes':before.st_size-end,
             'reader':None,'bytes':end-start,'inode':before.st_ino,'source':source,
             'prior_rejected':old.get('rejected_records',0), 'rejection_files':old.get('rejection_files',[])}
     if end>start:
         segment=work/(identity+'.segment.log')
-        with source.open('rb') as stream,segment.open('wb') as output:
-            stream.seek(start);remaining=end-start
-            while remaining:
-                block=stream.read(min(8*1024*1024,remaining))
-                if not block:raise ValueError('Append-only source was truncated while being copied')
-                output.write(block);remaining-=len(block)
         result['reader']=segment
+        if copy_segment:
+            materialize(result)
         result['key']=hashlib.sha256(f'{identity}:{start}:{end}:{anchor(source,end)}'.encode()).hexdigest()
     elif not prior:
         raise ValueError(f'{source.name}: no complete newline-terminated records yet')
     return result
+
+
+def materialize(plan):
+    """Copy a planned byte range only when a parser/quarantine requires a disk file."""
+    with plan['source'].open('rb') as stream,plan['reader'].open('wb') as output:
+        stream.seek(plan['offset']-plan['bytes']);remaining=plan['bytes']
+        while remaining:
+            block=stream.read(min(8*1024*1024,remaining))
+            if not block:raise ValueError('Source was truncated while being copied')
+            output.write(block);remaining-=len(block)
 
 
 def commit(plan, shards):
@@ -55,3 +53,17 @@ def commit(plan, shards):
            'rejection_files':plan.get('rejection_files',[])}
     temporary=plan['checkpoint'].with_suffix('.tmp')
     temporary.write_text(json.dumps(value),encoding='utf-8');temporary.replace(plan['checkpoint'])
+
+
+def chunk_end(source,start,size,maximum,chunk_bytes=None,allow_final=False):
+    """Find the same bounded complete-record boundary without changing a checkpoint."""
+    boundary=min(size,start+chunk_bytes) if chunk_bytes else size
+    with source.open('rb') as stream:
+        stream.seek(max(start,boundary-maximum-1));tail=stream.read(boundary-stream.tell())
+    newline=tail.rfind(b'\n')
+    end=max(start,boundary-len(tail)+newline+1) if newline>=0 else start
+    if allow_final and boundary==size:
+        end=boundary
+    if boundary-end>maximum:
+        raise ValueError(f'{source.name}: unterminated record exceeds maximum_object_size')
+    return end

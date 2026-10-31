@@ -8,6 +8,7 @@ import json
 import re
 import math
 import os
+import time
 from pathlib import Path
 
 
@@ -228,13 +229,20 @@ def benchmark(source:Path,train_before:str,test_after:str):
         groups[group].append(row)
     if any(not groups[name] for name in ('train','validation','test')):
         raise ValueError('Need nonempty chronological train, validation and test incident sets; overlapping incidents are excluded')
+    fit_started=time.perf_counter()
     artifact=_fit(groups['train'],train_before);methods=['majority','markov1','markov2','recency_markov1']
+    initial_fit_seconds=time.perf_counter()-fit_started
     validation={method:_metrics(groups['validation'],artifact,method) for method in methods}
     selected=max(methods,key=lambda method:((validation[method]['mrr'] or 0),(validation[method]['top1'] or 0),-methods.index(method)))
     # Refit selected approach on pre-test data. Never select it using the test scores.
+    fit_started=time.perf_counter()
     fitted=_fit(groups['train']+groups['validation'],test_after)
+    final_fit_seconds=time.perf_counter()-fit_started
     tests={method:_metrics(groups['test'],fitted,method) for method in methods}
     report={'split':'chronological_by_whole_incident','train_before':train_before,'test_after':test_after,
+            'timings':{'initial_fit_seconds':round(initial_fit_seconds,6),
+                       'final_fit_seconds':round(final_fit_seconds,6),
+                       'total_fit_seconds':round(initial_fit_seconds+final_fit_seconds,6)},
             'counts':{name:len(values) for name,values in groups.items()},'validation':validation,'test':tests,
             'selected_on_validation':selected,'label_source':payload.get('label_source','unspecified'),
             'sequence_test':sequence_metrics(groups['test'],fitted,selected),
@@ -253,7 +261,12 @@ def benchmark(source:Path,train_before:str,test_after:str):
     return report,model,groups['test']
 
 
-def export_history(out_dir:Path):
+def export_history(out_dir:Path, use_cache=False):
+    summary=out_dir/'sequence_history.json'
+    if use_cache and summary.exists():
+        saved=json.loads(summary.read_text(encoding='utf-8'))
+        if saved.get('index_sha256')==hashlib.sha256((out_dir/'index.json').read_bytes()).hexdigest():
+            return saved['history']
     index=json.loads((out_dir/'index.json').read_text(encoding='utf-8-sig'));rows=[]
     for item in index:
         inc=json.loads((out_dir/'incidents'/f"{item['id']}.json").read_text(encoding='utf-8-sig'))
@@ -266,7 +279,7 @@ def export_history(out_dir:Path):
             'warning':'Review these inferred incidents and labels before using them as independent evaluation ground truth.'}
 
 
-def attach_model(out_dir:Path,model_path:Path):
+def attach_model(out_dir:Path,model_path:Path,sidecar=False):
     lock=out_dir/'.pipeline.lock'
     try:
         descriptor=os.open(lock,os.O_CREAT|os.O_EXCL|os.O_WRONLY)
@@ -275,9 +288,30 @@ def attach_model(out_dir:Path,model_path:Path):
     try:
         with os.fdopen(descriptor,'w') as stream:
             stream.write(str(os.getpid()))
-        return _attach_model(out_dir,model_path)
+        return _attach_sidecar(out_dir,model_path) if sidecar else _attach_model(out_dir,model_path)
     finally:
         lock.unlink(missing_ok=True)
+
+
+def _attach_sidecar(out_dir:Path,model_path:Path):
+    from tracekc.materialize import write_json
+    model=json.loads(model_path.read_text(encoding='utf-8-sig'))
+    index=json.loads((out_dir/'index.json').read_text(encoding='utf-8-sig'))
+    histories={row['id']:row for row in export_history(out_dir,use_cache=True)['incidents']}
+    predictions={};estimated=0
+    for row in index:
+        sequence=histories[row['fingerprint']]['techniques']
+        result=predict(model,sequence[-1] if sequence else None,row['first_seen'],sequence)
+        estimated+=result['status']=='estimated'
+        predictions[str(row['id'])]={'fingerprint':row['fingerprint'],'forecast':result}
+    signature=hashlib.sha256(json.dumps(index,separators=(',',':'),default=str).encode('utf-8')).hexdigest()
+    write_json(out_dir/'forecasts.json',{'index_sha256':signature,'model_sha256':hashlib.sha256(model_path.read_bytes()).hexdigest(),
+                                       'predictions':predictions})
+    write_json(out_dir/'index.json',index)
+    result={'incidents':len(index),'estimated':estimated,'model':model['selected_model'],
+            'label_source':model.get('label_source','unspecified'),'raw_reprocessing':False,'storage':'forecast_sidecar'}
+    write_json(out_dir/'forecast-attachment.json',result)
+    return result
 
 
 def _attach_model(out_dir:Path,model_path:Path):
@@ -298,17 +332,19 @@ def _attach_model(out_dir:Path,model_path:Path):
         prefix=[s['technique'] for s in incident['timeline'] if s.get('technique')]
         incident['forecast']=predict(model,prefix[-1] if prefix else None,incident['first_seen'],prefix)
         estimated+=incident['forecast']['status']=='estimated'
-        steps={s['step']:s for s in incident['timeline']}
-        for edge in incident['graph']['edges']:
-            supporting=[steps[n] for n in edge.get('steps',[]) if n in steps]
-            if not supporting or edge.get('evidence_kind')=='hypothesis':
-                continue
-            if edge['kind']=='correlates_with':
-                times=[max(int(timestamp(s['ts']).timestamp()*1000) for s in supporting)]
-            else:
-                times=[int(timestamp(value).timestamp()*1000) for s in supporting for value in (s['ts'],s.get('ts_last') or s['ts'])]
-            edge['observation_times_ms']=sorted(set(times))
-        GraphIndex(incident['graph'])
+        if incident['graph'].get('observation_schema_version',0)<2:
+            steps={s['step']:s for s in incident['timeline']}
+            for edge in incident['graph']['edges']:
+                supporting=[steps[n] for n in edge.get('steps',[]) if n in steps]
+                if not supporting or edge.get('evidence_kind')=='hypothesis':
+                    continue
+                if edge['kind']=='correlates_with':
+                    times=[max(int(timestamp(s['ts']).timestamp()*1000) for s in supporting)]
+                else:
+                    times=[int(timestamp(value).timestamp()*1000) for s in supporting for value in (s['ts'],s.get('ts_last') or s['ts'])]
+                edge['observation_times_ms']=sorted(set(times))
+            GraphIndex(incident['graph'])
+            incident['graph']['observation_schema_version']=2
         write_json(path,incident)
     write_json(out_dir/'index.json',index)
     result={'incidents':len(index),'estimated':estimated,'model':model['selected_model'],

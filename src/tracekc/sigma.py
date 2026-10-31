@@ -439,14 +439,14 @@ def relation_sql(rule_id: str, rules: dict[str, Rule], cap: int, _stack=()) -> s
         return f"""
 SELECT {gsel}min(ts_first_ms) AS ts_first_ms, max(ts_last_ms) AS ts_last_ms,
        sum(event_count)::BIGINT AS event_count,
-       flatten(list(event_ids ORDER BY ts_first_ms))[1:{cap}] AS event_ids{', ' + agg_others if agg_others else ''}
+       flatten(list(event_ids ORDER BY ts_first_ms,ts_last_ms,list_sort(event_ids)))[1:{cap}] AS event_ids{', ' + agg_others if agg_others else ''}
 FROM (
-  SELECT *, sum(brk) OVER (PARTITION BY {part} ORDER BY ts_first_ms ROWS UNBOUNDED PRECEDING) AS sess
+  SELECT *, sum(brk) OVER (PARTITION BY {part} ORDER BY ts_first_ms,ts_last_ms,list_sort(event_ids) ROWS UNBOUNDED PRECEDING) AS sess
   FROM (
     SELECT *,
       sum(event_count) OVER (PARTITION BY {part} ORDER BY ts_first_ms
                              RANGE BETWEEN {span} PRECEDING AND CURRENT ROW) AS win,
-      CASE WHEN ts_first_ms - lag(ts_last_ms) OVER (PARTITION BY {part} ORDER BY ts_first_ms) > {span}
+      CASE WHEN ts_first_ms - lag(ts_last_ms) OVER (PARTITION BY {part} ORDER BY ts_first_ms,ts_last_ms,list_sort(event_ids)) > {span}
            THEN 1 ELSE 0 END AS brk
     FROM ({inner}) r WHERE {notnull}
   )

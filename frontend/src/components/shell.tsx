@@ -7,6 +7,7 @@ import { useApi } from '@/lib/api';
 import type { AIStatus, Health, IncidentRow, Progress } from '@/lib/types';
 import { scoreLevel, LEVEL_COLOR, title as fmtTitle } from '@/lib/format';
 import { cx } from './ui';
+import { RunSummary } from './run-summary';
 
 const NAV = [
   { href: '/', label: 'Overview', icon: LayoutDashboard },
@@ -61,7 +62,7 @@ function Palette({ open, onClose }: { open: boolean; onClose: () => void }) {
   const router = useRouter();
   const [q, setQ] = useState('');
   const [active, setActive] = useState(0);
-  const { data } = useApi<IncidentRow[]>(open ? '/incidents?limit=1000' : null);
+  const { data } = useApi<IncidentRow[]>(open ? '/incidents' : null);
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => { if (open) { setQ(''); setActive(0); setTimeout(() => input.current?.focus(), 10); } }, [open]);
   const results = useMemo(() => {
@@ -151,7 +152,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           </nav>
         )}
       </header>
-      <main className="relative mx-auto w-full max-w-[1480px] px-4 pb-16 pt-6 sm:px-6 lg:px-8 lg:pt-10">{children}</main>
+      <main className="relative mx-auto w-full max-w-[1480px] px-4 pb-16 pt-6 sm:px-6 lg:px-8 lg:pt-10"><RunSummary />{children}</main>
       <footer className="mx-auto flex w-full max-w-[1480px] flex-wrap items-center justify-between gap-3 border-t border-line px-4 py-8 text-xs text-fg-subtle sm:px-6 lg:px-8">
         <span className="font-display text-lg text-fg">Every incident, explained.</span>
         <span className="font-mono">$ tracekc run → detect → map → link → graph → predict</span>

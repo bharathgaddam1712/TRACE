@@ -25,8 +25,11 @@ def label(con, mapping: dict) -> dict:
     for short, (display, order, lockheed) in mapping["tactics"].items():
         run(con, "INSERT INTO tactic_map VALUES (?, ?, ?, ?)", [short, display, int(order), lockheed])
     run(con, "CREATE OR REPLACE TABLE tech_map (technique VARCHAR, name VARCHAR, tactics VARCHAR[])")
-    for tid, t in mapping["techniques"].items():
-        run(con, "INSERT INTO tech_map VALUES (?, ?, ?)", [tid.upper(), t["name"], list(t["tactics"])])
+    techniques=list(mapping['techniques'].items())
+    if techniques:
+        run(con,"INSERT INTO tech_map SELECT unnest(?::VARCHAR[]),unnest(?::VARCHAR[]),unnest(?::VARCHAR[][])",
+            [[tid.upper() for tid,_ in techniques], [t['name'] for _,t in techniques],
+             [list(t['tactics']) for _,t in techniques]])
     version = str(mapping.get("attack_version", "unknown"))
     # Sub-technique missing from the table falls back to its parent's tactics. The rule's attack.<tactic>
     # tag selects among several valid tactics; a tag that is not valid for the technique is ignored.
@@ -46,7 +49,7 @@ def label(con, mapping: dict) -> dict:
                       ELSE 'unmapped' END AS mapping_source
           FROM normalized d
           LEFT JOIN tech_map t ON d.technique = t.technique
-          LEFT JOIN tech_map tp ON t.technique IS NULL AND split_part(d.technique, '.', 1) = tp.technique),
+          LEFT JOIN tech_map tp ON CASE WHEN t.technique IS NULL THEN split_part(d.technique, '.', 1) END = tp.technique),
         k AS (
           SELECT *,
                  CASE WHEN technique IS NULL THEN NULL

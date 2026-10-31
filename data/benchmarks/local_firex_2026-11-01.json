@@ -1,0 +1,105 @@
+{
+  "published_at": "2026-10-31T23:39:08.723962+00:00",
+  "input": {
+    "filename": "firex-10G.log",
+    "bytes": 6543120032,
+    "full_file": true,
+    "fresh_normalized_cache": true,
+    "os_file_cache": "Not flushed; do not describe as cold disk I/O."
+  },
+  "hardware": {
+    "cpu": "12th Gen Intel(R) Core(TM) i7-1255U",
+    "logical_cpus": 12,
+    "ram_gib": 15.7
+  },
+  "settings": {
+    "threads": 4,
+    "duckdb_memory_limit": "2GB",
+    "native_format": "json",
+    "native_prefetch": true,
+    "temporal_interaction_cap": 100000,
+    "temporal_experiment_parallel": true
+  },
+  "timings": {
+    "ingest_seconds": 289.644,
+    "detect_seconds": 116.699,
+    "label_seconds": 6.719,
+    "correlate_seconds": 58.605,
+    "materialize_seconds": 79.723,
+    "total_wall_seconds": 562.623,
+    "pipeline_seconds": 562.623,
+    "history_export_seconds": 0.017,
+    "forecast_fit_and_evaluate_seconds": 0.054,
+    "forecast_attachment_seconds": 0.147,
+    "temporal_wait_after_pipeline_seconds": 0.0,
+    "temporal_experiment_seconds": 16.39,
+    "temporal_experiment_parallel": true,
+    "complete_demo_seconds": 564.157,
+    "under_ten_minutes": true,
+    "under_seven_minutes": false,
+    "awake_request_active": true,
+    "threads": 4,
+    "memory_limit": "2GB",
+    "spill_cap_gb": 120,
+    "source_bytes": 6543120032
+  },
+  "prior_complete_demo_seconds": 788.533,
+  "end_to_end_reduction_percent": 28.45,
+  "peak_process_tree_rss_gib": 2.625,
+  "counts": {
+    "valid_events": 8313147,
+    "records_before_deduplication": 9125382,
+    "duplicates_removed": 812235,
+    "reader_rejected_records": 6722658,
+    "reader_rejected_bytes": 1727444911
+  },
+  "detections_by_source": {
+    "sigma": 27595,
+    "sigma_correlation": 5203,
+    "vendor": 381204
+  },
+  "signals": {
+    "signals": 413519,
+    "suppressed_signals": 0,
+    "recurrent_signals": 5201,
+    "detections_merged": 414002
+  },
+  "output": {
+    "incidents": 1940,
+    "isolated_groups": 72505,
+    "isolated_signals": 172044
+  },
+  "quality_comparison": {
+    "all_passed": true,
+    "checks": {
+      "ingest.events": true,
+      "ingest.records_before_deduplication": true,
+      "ingest.duplicates_removed": true,
+      "ingest.valid_events": true,
+      "ingest.quarantined_rows": true,
+      "ingest.reader_rejected_records": true,
+      "ingest.reader_rejected_bytes": true,
+      "detect.detections_by_source": true,
+      "detect.detections_by_rule": true,
+      "signals": true,
+      "output": true,
+      "all_normalized_rows_checksum": true,
+      "incident_evidence_fingerprints": true
+    },
+    "row_checksum_method": "Count, sum and XOR of DuckDB 64-bit row hashes over all normalized columns; probabilistic multiset comparison.",
+    "reference_seconds": 783.918,
+    "candidate_seconds": 562.623
+  },
+  "limitations": [
+    "Single local measurement; not a guarantee on other files or machine load.",
+    "Malformed bytes were quarantined with the same accounting as the reference; original source preserved.",
+    "Forecast labels are inferred and unreviewed; this is not independently established attack-prediction accuracy."
+  ],
+  "validation": {
+    "pytest_passed": 88,
+    "nextjs_typecheck": "passed",
+    "nextjs_production_build": "passed",
+    "quality_comparison": "13 of 13 checks passed",
+    "local_model_summary_and_download": "HTTP 200 verified"
+  }
+}

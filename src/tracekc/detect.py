@@ -60,7 +60,7 @@ def _register_rules(con, rules: dict[str, Rule]) -> None:
             raise
 
 
-def _rule_hits(con, rules: dict[str, Rule], batch_size: int = 16) -> int:
+def _rule_hits(con, rules: dict[str, Rule], batch_size: int = 16, unique_events: bool = False) -> int:
     base = [r for r in rules.values() if r.kind == "base"]
     actions={row[0] for row in run(con,'SELECT DISTINCT action FROM ev')}
     os_types={row[0] for row in run(con,'SELECT DISTINCT os_type FROM ev WHERE os_type IS NOT NULL')}
@@ -92,6 +92,7 @@ def _rule_hits(con, rules: dict[str, Rule], batch_size: int = 16) -> int:
         scope = tuple(sorted({LOGSOURCE[(key,value)] for key,value in rule.logsource.items()
                               if LOGSOURCE.get((key,value))})) if materialized else ()
         groups[scope].append(rule)
+    batches=0
     for scope, scoped_rules in sorted(groups.items()):
         predicate = ' AND '.join(f'({part})' for part in scope) or 'TRUE'
         if materialized:
@@ -104,14 +105,19 @@ def _rule_hits(con, rules: dict[str, Rule], batch_size: int = 16) -> int:
             run(con, f"""INSERT INTO raw_rule_hits
                 SELECT event_id,ts_ms,{ENT},{EVIDENCE_SQL} AS evidence,list_distinct([{cases}]) AS hits
                 FROM {relation} WHERE {any_match}""")
+            batches+=1
     if materialized:
         run(con, 'DROP TABLE rule_scope')
         run(con, 'DROP TABLE detection_events')
-    run(con, f"""CREATE OR REPLACE TABLE rule_hits AS
-        SELECT event_id,any_value(ts_ms) AS ts_ms,
-               {', '.join(f'any_value({column}) AS {column}' for column in ENTITY_COLS)},
-               any_value(evidence) AS evidence,list_distinct(flatten(list(hits))) AS hits
-        FROM raw_rule_hits GROUP BY event_id""")
+    if batches==1 and unique_events:
+        run(con,'DROP TABLE IF EXISTS rule_hits')
+        run(con,'ALTER TABLE raw_rule_hits RENAME TO rule_hits')
+    else:
+        run(con, f"""CREATE OR REPLACE TABLE rule_hits AS
+            SELECT event_id,any_value(ts_ms) AS ts_ms,
+                   {', '.join(f'any_value({column}) AS {column}' for column in ENTITY_COLS)},
+                   any_value(evidence) AS evidence,list_distinct(flatten(list(hits))) AS hits
+            FROM raw_rule_hits GROUP BY event_id""")
     return one(con, "SELECT count(*) FROM rule_hits")[0]
 
 
@@ -196,21 +202,34 @@ def _lateral(con, c: dict) -> None:
 
 
 def _volume(con, c: dict, cap: int) -> None:
+    # Destination population does not depend on hourly grouping. Classify each
+    # distinct address once, rather than parsing the same address on every row.
+    run(con,"""CREATE OR REPLACE TEMP TABLE volume_destinations AS
+        WITH population AS MATERIALIZED (
+            SELECT dst_ip,count(DISTINCT host) AS hosts
+            FROM ev WHERE action='network_connection' AND net_bytes IS NOT NULL AND dst_ip IS NOT NULL
+              AND coalesce(direction,'outbound')='outbound' GROUP BY dst_ip)
+        SELECT *, NOT is_internal(dst_ip) AS external FROM population""")
+    possible=one(con,f"""SELECT EXISTS (
+        SELECT 1 FROM ev e JOIN volume_destinations p USING(dst_ip)
+        WHERE p.external AND p.hosts<=3 AND e.action='network_connection' AND e.net_bytes IS NOT NULL
+          AND coalesce(e.direction,'outbound')='outbound'
+        GROUP BY e.host,e.dst_ip,e.ts_ms // 3600000 HAVING sum(e.net_bytes)>={int(c['min_bytes'])})""")[0]
+    if not possible:
+        log.info('volume: no rare external hourly group reaches min_bytes; no MAD threshold can qualify')
+        run(con,'DROP TABLE volume_destinations')
+        return
     run(con, f"""
         INSERT INTO detections
         SELECT * FROM (
           WITH f AS (
-            SELECT host, dst_ip, ts_ms // 3600000 AS bucket, any_value(dst_domain) AS dst_domain,
-                   arg_max(user_name, net_bytes) AS user_name, arg_max(proc_name, net_bytes) AS proc_name,
-                   arg_max(proc_pid, net_bytes) AS proc_pid,
-                   any_value(src_ip) AS src_ip, any_value(src_host) AS src_host, any_value(dst_host) AS dst_host,
-                   sum(net_bytes) AS total, count(*) AS n, min(ts_ms) AS t0, max(ts_ms) AS t1,
-                   list(event_id ORDER BY net_bytes DESC)[1:{cap}] AS ids
-            FROM ev
+            SELECT host, dst_ip, ts_ms // 3600000 AS bucket,
+                   sum(net_bytes) AS total, count(*) AS n, min(ts_ms) AS t0, max(ts_ms) AS t1
+            FROM ev JOIN volume_destinations p USING(dst_ip)
             WHERE action = 'network_connection' AND net_bytes IS NOT NULL AND dst_ip IS NOT NULL
-              AND coalesce(direction, 'outbound') = 'outbound' AND NOT is_internal(dst_ip)
+              AND coalesce(direction, 'outbound') = 'outbound' AND p.external
             GROUP BY host, dst_ip, bucket),
-          pop AS (SELECT dst_ip, count(DISTINCT host) AS hosts FROM f GROUP BY dst_ip),
+          pop AS (SELECT dst_ip,hosts FROM volume_destinations WHERE external),
           st AS (SELECT median(total) AS med FROM f),
           mad AS (SELECT median(abs(total - st.med)) AS mad FROM f, st),
           hs AS (SELECT host, median(total) AS med, count(*) AS samples FROM f GROUP BY host),
@@ -219,17 +238,34 @@ def _volume(con, c: dict, cap: int) -> None:
             CASE WHEN samples >= 5 THEN hs.med ELSE st.med END AS med,
             CASE WHEN samples >= 5 THEN hm.mad ELSE mad.mad END AS mad,
             CASE WHEN samples >= 5 THEN 'host' ELSE 'fleet_fallback' END AS scope
-            FROM hs JOIN hm USING (host), st, mad)
+            FROM hs JOIN hm USING (host), st, mad),
+          eligible AS MATERIALIZED (
+            SELECT f.*, baseline.scope,
+                   greatest({int(c['min_bytes'])}, baseline.med + {float(c['mad_k'])} * baseline.mad) AS threshold
+            FROM f JOIN pop USING (dst_ip) JOIN baseline USING (host)
+            WHERE pop.hosts <= 3 AND f.total >= {int(c['min_bytes'])}
+              AND f.total > baseline.med + {float(c['mad_k'])} * baseline.mad),
+          evidence AS (
+            SELECT e.host, e.dst_ip, e.ts_ms // 3600000 AS bucket,
+                   any_value(e.dst_domain) AS dst_domain,
+                   arg_max(e.user_name, e.net_bytes) AS user_name, arg_max(e.proc_name, e.net_bytes) AS proc_name,
+                   arg_max(e.proc_pid, e.net_bytes) AS proc_pid,
+                   any_value(e.src_ip) AS src_ip, any_value(e.src_host) AS src_host, any_value(e.dst_host) AS dst_host,
+                   list(e.event_id ORDER BY e.net_bytes DESC)[1:{cap}] AS ids
+            FROM ev e JOIN eligible q ON e.host=q.host AND e.dst_ip=q.dst_ip
+              AND e.ts_ms // 3600000=q.bucket
+            WHERE e.action='network_connection' AND e.net_bytes IS NOT NULL
+              AND coalesce(e.direction, 'outbound')='outbound' AND NOT is_internal(e.dst_ip)
+            GROUP BY e.host, e.dst_ip, e.ts_ms // 3600000)
           SELECT md5('vol|' || f.host || '|' || f.dst_ip || '|' || f.bucket), 'trace-outbound-volume',
                  ['trace-outbound-volume'], 'Unusually large outbound transfer to a rare external destination',
                  'builtin', {lit(c['technique'])}, [{lit(c['technique'])}], 'exfiltration', 50, 'TRACE builtin',
-                 f.t0, f.t1, f.host, f.user_name, f.src_ip, f.dst_ip, f.src_host, f.dst_host, f.dst_domain,
-                 f.proc_name, f.proc_pid, f.n, f.ids,
-                 to_json({{'bytes_total': f.total, 'connections': f.n, 'baseline_scope': baseline.scope, 'threshold_bytes':
-                           greatest({int(c['min_bytes'])}, baseline.med + {float(c['mad_k'])} * baseline.mad)}})::VARCHAR, FALSE
-          FROM f JOIN pop USING (dst_ip) JOIN baseline USING (host)
-          WHERE pop.hosts <= 3 AND f.total >= {int(c['min_bytes'])}
-            AND f.total > baseline.med + {float(c['mad_k'])} * baseline.mad)""")
+                 f.t0, f.t1, f.host, evidence.user_name, evidence.src_ip, f.dst_ip, evidence.src_host, evidence.dst_host, evidence.dst_domain,
+                 evidence.proc_name, evidence.proc_pid, f.n, evidence.ids,
+                 to_json({{'bytes_total': f.total, 'connections': f.n, 'baseline_scope': f.scope,
+                           'threshold_bytes': f.threshold}})::VARCHAR, FALSE
+          FROM eligible f JOIN evidence USING (host, dst_ip, bucket))""")
+    run(con,'DROP TABLE volume_destinations')
 
 
 def _rarity(con, c: dict) -> None:
@@ -255,14 +291,20 @@ def detect(con, cfg: dict, rules: dict[str, Rule]) -> dict:
     cap = int(d["max_event_ids"])
     run(con, DETECTIONS_DDL)
     _register_rules(con, rules)
-    hits = _rule_hits(con, rules, max(1,min(128,int(d.get('rules_sql_batch_size',16)))))
+    hits = _rule_hits(con, rules, max(1,min(128,int(d.get('rules_sql_batch_size',16)))),
+                      unique_events=bool(cfg['ingest'].get('dedupe_events',True)))
     _single_event_detections(con)
     _correlation_detections(con, rules, cap)
     _vendor_detections(con, bool(d.get("use_vendor_alerts", True)))
     if d["lateral"]["enabled"]:
         _lateral(con, d["lateral"])
     if d["volume"]["enabled"]:
-        _volume(con, d["volume"], cap)
+        scan_threads=int(one(con,"SELECT current_setting('threads')")[0])
+        run(con,f"SET threads={min(scan_threads,int(cfg['engine'].get('blocking_threads',4)))}")
+        try:
+            _volume(con, d["volume"], cap)
+        finally:
+            run(con,f'SET threads={scan_threads}')
     if d["rarity"]["enabled"]:
         _rarity(con, d["rarity"])
     by_source = dict(run(con, "SELECT rule_source, count(*) FROM detections GROUP BY 1 ORDER BY 1"))

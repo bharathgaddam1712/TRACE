@@ -123,20 +123,3 @@ def test_api_triage_review_is_bound_to_case(tmp_path,setup,monkeypatch):
         review={'context_hash':result.json()['context_hash'],'decision':'escalate','note':'Reviewed'}
         assert client.post('/incidents/1/triage/review',json=review).status_code==200
         assert client.post('/incidents/1/triage/review',json={**review,'context_hash':'0'*64}).status_code==409
-
-
-def test_streamlit_triage_button_handles_missing_provider(setup,monkeypatch):
-    testing=pytest.importorskip('streamlit.testing.v1')
-    root,_,_=setup
-    monkeypatch.setenv('TRACE_DEMO_OUT',str(root));monkeypatch.setenv('SARVAM_API_KEY','')
-    row=incident();row['title']='Test incident';row['narrative']='Evidence-backed test'
-    row['graph']={'nodes':[{'id':'h','label':'HOST','type':'host'},{'id':'e','label':'Signal','type':'event'}],
-                  'edges':[{'source':'h','target':'e','kind':'observed_on','steps':[1]}]}
-    (root/'incidents').mkdir()
-    (root/'incidents/1.json').write_text(json.dumps(row))
-    (root/'index.json').write_text(json.dumps([{'id':1,'title':row['title'],'score':45,'first_seen':row['first_seen']}]))
-    app=testing.AppTest.from_file(str(Path(__file__).resolve().parents[1]/'streamlit_app.py'),default_timeout=30).run()
-    assert not app.exception
-    next(button for button in app.button if button.label=='Run triage agent').click().run()
-    assert not app.exception
-    assert any('insufficient_evidence' in str(item.value) for item in app.json)

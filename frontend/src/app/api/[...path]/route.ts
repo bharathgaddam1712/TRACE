@@ -23,7 +23,8 @@ async function forward(request: NextRequest, params: Promise<{ path: string[] }>
     const upstream = await fetch(url, { method: request.method, headers, body, cache: 'no-store' });
     return new Response(upstream.body, {
       status: upstream.status,
-      headers: { 'content-type': upstream.headers.get('content-type') || 'application/json', 'cache-control': 'no-store' },
+      headers: { 'content-type': upstream.headers.get('content-type') || 'application/json', 'cache-control': 'no-store',
+        ...(upstream.headers.get('content-disposition') ? { 'content-disposition': upstream.headers.get('content-disposition')! } : {}) },
     });
   } catch {
     return Response.json({ detail: `TRACE API unreachable at ${API}. Start it with: python -m tracekc serve --out OUT` }, { status: 502 });

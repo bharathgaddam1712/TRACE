@@ -1,6 +1,7 @@
 'use client';
 import { Cpu, Database, FileCheck2, Gauge, Timer } from 'lucide-react';
 import { useApi } from '@/lib/api';
+import { PredictionModel } from '@/components/incident/Predict';
 import type { Metrics, Progress } from '@/lib/types';
 import { bytes, number, seconds, when } from '@/lib/format';
 import { Bars, Card, CardHeader, Chip, ErrorBox, KV, Mono, Skeleton, Stat } from '@/components/ui';
@@ -11,6 +12,7 @@ export default function DataPage() {
   const metrics = useApi<Metrics>('/metrics');
   const progress = useApi<Progress>('/progress', 3000);
   const schemas = useApi<Schemas>('/parser-schemas');
+  const loop = useApi<{ complete_demo_seconds?: number }>('/demo/timings',5000);
   if (metrics.error) return <ErrorBox error={metrics.error} />;
   const m = metrics.data;
   if (!m) return <div className="grid gap-4 md:grid-cols-4">{[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-28" />)}<Skeleton className="h-80 md:col-span-4" /></div>;
@@ -34,9 +36,9 @@ export default function DataPage() {
       </header>
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Stat label="Events" value={number.format(i.events ?? 0)} hint={`${i.input_files ?? 0} file(s) · ${bytes(i.input_bytes)}`} icon={<Database className="size-4" />} />
-        <Stat label="Input quality" value={<span className="text-lg">{(m.input_quality ?? 'unknown').replace(/_/g, ' ')}</span>} hint={`${rejected} records rejected`} icon={<FileCheck2 className="size-4" />} accent={rejected ? '#c9902f' : '#5d8f6a'} />
-        <Stat label="Wall time" value={seconds(t.total_wall_seconds)} hint={`${number.format(Math.round((i.events ?? 0) / Math.max(t.total_wall_seconds ?? 1, 0.001)))} events/s`} icon={<Timer className="size-4" />} accent="#3f7f7a" />
-        <Stat label="Peak memory" value={`${(m.peak_process_tree_rss_gb ?? 0).toFixed(2)} GB`} hint={`limit ${String(m.machine?.memory_limit ?? '—')} · ${String(m.machine?.cpus ?? '?')} CPUs`} icon={<Cpu className="size-4" />} accent="#7d68a8" />
+        <Stat label="Input quality" value={<span className="text-lg">{(m.input_quality ?? 'unknown').replace(/_/g, ' ')}</span>} hint={`${number.format(i.reader_rejected_records ?? 0)} rejected physical-line fragments · ${bytes(i.reader_rejected_bytes)} raw bytes`} icon={<FileCheck2 className="size-4" />} accent={rejected ? '#c9902f' : '#5d8f6a'} />
+        <Stat label={loop.data?.complete_demo_seconds !== undefined ? 'Complete demo time' : 'Core pipeline time'} value={seconds(loop.data?.complete_demo_seconds ?? t.total_wall_seconds)} hint={`Core processing ${seconds(t.total_wall_seconds)} · models and publication included when complete`} icon={<Timer className="size-4" />} accent="#3f7f7a" />
+        <Stat label="Peak memory" value={`${(m.peak_process_tree_rss_gb ?? 0).toFixed(2)} GiB`} hint={`DuckDB buffer ${String(m.machine?.memory_limit ?? '—')} · ${String(m.machine?.threads ?? '?')} configured workers / ${String(m.machine?.cpus ?? '?')} logical CPUs`} icon={<Cpu className="size-4" />} accent="#7d68a8" />
       </div>
       <div className="grid gap-5 lg:grid-cols-2">
         <Card><CardHeader icon={<Gauge className="size-4" />} title="Stage timings" subtitle="Seconds per pipeline stage" />
@@ -45,13 +47,13 @@ export default function DataPage() {
           action={p && <Chip tone={p.state === 'complete' ? 'cyan' : 'brand'}><span className="live-dot" />{p.state}</Chip>} />
           <div className="px-5 pb-5 space-y-4">
             <div className="h-2.5 overflow-hidden rounded-full bg-ink-700"><div className="h-full rounded-full bg-gradient-to-r from-brand to-brand-2 transition-all" style={{ width: `${pct}%` }} /></div>
-            <KV rows={[['Stage', p?.stage ?? '—'], ['Read', `${bytes(p?.completed_bytes)} of ${bytes(p?.source_bytes)}`], ['Chunks', p?.chunks ?? '—'],
+            <KV rows={[['Stage', p?.stage ?? '—'], ['Read', `${bytes(p?.completed_bytes ?? (p?.state === 'complete' ? i.input_bytes : 0))} of ${bytes(p?.source_bytes ?? i.input_bytes)}`], ['Chunks', p?.chunks ?? (p?.state === 'complete' ? i.normalized_shards : '—')],
               ['Data window', i.ts_min_ms ? `${when(new Date(i.ts_min_ms).toISOString())} → ${when(new Date(i.ts_max_ms).toISOString())}` : '—'],
               ['Formats', Object.entries(i.formats ?? {}).map(([k, v]) => `${k} (${v})`).join(', ') || '—'], ['Parquet', bytes(i.parquet_bytes)], ['Pipeline', `v${m.version ?? '?'} · ATT&CK ${m.attack_mapping_version ?? '?'}`]]} />
             {p?.error && <p className="text-xs text-crit">{p.error}</p>}
           </div></Card>
       </div>
-      <Card><CardHeader title="Ingest quality" subtitle="Zero is good — every non-zero count is explained in run_metrics.json" />
+      <Card><CardHeader title="Ingest quality" subtitle="Parsed rows and rejected physical-line fragments are separate. Optional usernames can be absent on firewall traffic." />
         <div className="grid grid-cols-2 gap-2 px-5 pb-5 md:grid-cols-4">
           {quality.map(([k, v]) => (
             <div key={k} className="rounded-lg bg-ink-900/60 px-4 py-3 ring-1 ring-line">
@@ -60,6 +62,7 @@ export default function DataPage() {
             </div>
           ))}
         </div></Card>
+      <PredictionModel />
       <Card><CardHeader title="Supported log formats" subtitle={`Parser contract v${schemas.data?.version ?? '?'} · required normalized fields: ${schemas.data?.normalized_required?.join(', ') ?? '…'}`} />
         <div className="grid gap-3 px-5 pb-5 md:grid-cols-2 xl:grid-cols-3">
           {Object.entries(schemas.data?.formats ?? {}).map(([name, f]) => (

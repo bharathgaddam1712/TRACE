@@ -8,7 +8,7 @@ from bisect import bisect_left
 
 
 class GraphIndex:
-    def __init__(self, graph):
+    def __init__(self, graph, *, build_adjacency=True):
         self.nodes = {n['id']:n for n in graph['nodes']}
         self.edges, self.adjacency = {}, defaultdict(list)
         for original in graph['edges']:
@@ -22,8 +22,9 @@ class GraphIndex:
                 raise ValueError('Graph contains a dangling edge')
             self.edges[edge['id']] = edge
             edge['observation_times_ms'] = sorted(set(int(t) for t in edge.get('observation_times_ms',[])))
-            self.adjacency[edge['source']].append((edge['target'],edge['id'],True))
-            self.adjacency[edge['target']].append((edge['source'],edge['id'],False))
+            if build_adjacency:
+                self.adjacency[edge['source']].append((edge['target'],edge['id'],True))
+                self.adjacency[edge['target']].append((edge['source'],edge['id'],False))
 
     def neighborhood(self, root, depth=2, limit=500, directed=False):
         if root not in self.nodes:
@@ -121,24 +122,26 @@ def weighted_jaccard(left, right):
     return sum(min(left.get(k,0),right.get(k,0)) for k in keys)/denominator if denominator else 0.0
 
 
+def signal_features(signal):
+    result={}
+    for key,weight in [('host',3),('user_name',3),('src_ip',1),('dst_ip',1),('technique',1)]:
+        if signal.get(key): result[key+':'+str(signal[key])]=weight
+    for identity in signal.get('process_keys') or []: result['process:'+identity]=5
+    return result
+
+
 def signal_similarity(left,right):
-    def features(signal):
-        result={}
-        for key,weight in [('host',3),('user_name',3),('src_ip',1),('dst_ip',1),('technique',1)]:
-            if signal.get(key): result[key+':'+str(signal[key])]=weight
-        for identity in signal.get('process_keys') or []: result['process:'+identity]=5
-        return result
-    return weighted_jaccard(features(left),features(right))
+    return weighted_jaccard(signal_features(left),signal_features(right))
 
 
-def link_decision(left, right, relation, config):
+def link_decision(left, right, relation, config, features=None):
     """Relation-specific gate, after SQL time/session and hub filtering.
 
     A shared external endpoint/account can span hosts: a universal Jaccard
     threshold incorrectly penalizes that intended relationship. Scores are
     association strengths, never probabilities or proof of common attribution.
     """
-    score = signal_similarity(left, right)
+    score = weighted_jaccard(*features) if features is not None else signal_similarity(left, right)
     threshold = float(config.get('relation_thresholds', {}).get(
         relation, config.get('similarity_threshold', 0.3)))
     specific = relation in {'lateral', 'process_entity'}
