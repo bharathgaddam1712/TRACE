@@ -1,11 +1,13 @@
 import json
 import sqlite3
+import io
+import urllib.error
 from pathlib import Path
 
 import duckdb
 import pytest
 
-from tracekc.ai import SarvamService
+from tracekc.ai import SarvamService,AIError
 from tracekc.triage import TriagePipeline,TriageRequest,TriageReview
 
 
@@ -123,3 +125,36 @@ def test_api_triage_review_is_bound_to_case(tmp_path,setup,monkeypatch):
         review={'context_hash':result.json()['context_hash'],'decision':'escalate','note':'Reviewed'}
         assert client.post('/incidents/1/triage/review',json=review).status_code==200
         assert client.post('/incidents/1/triage/review',json={**review,'context_hash':'0'*64}).status_code==409
+
+
+def test_triage_respects_configured_budget_and_invalidates_cache(setup):
+    _,triage,calls=setup
+    triage.ai.max_tokens=8192
+    assert not triage.run(incident(),TriageRequest(),{'techniques':{}})['errors']
+    assert calls[-1]['max_tokens']==8192
+    triage.ai.max_tokens=16384
+    result=triage.run(incident(),TriageRequest(),{'techniques':{}})
+    assert not result['cached'] and calls[-1]['max_tokens']==16384 and len(calls)==2
+
+
+@pytest.mark.parametrize('failure,expected',[
+    ('http','HTTP 401'),('timeout','timed out'),('length','incomplete'),
+    ('schema','triage schema'),('citations','outside'),('missing','no supporting'),('key','[REDACTED]')])
+def test_triage_failures_are_actionable_and_never_cached(setup,failure,expected):
+    root,triage,_=setup
+    def transport(payload):
+        if failure=='http':raise urllib.error.HTTPError('https://example.invalid',401,'Unauthorized',{},io.BytesIO(b'sensitive provider body'))
+        if failure=='timeout':raise TimeoutError('private network detail')
+        if failure=='key':raise AIError('provider rejected test-triage-key')
+        if failure=='length':return {'choices':[{'finish_reason':'length','message':{'content':''}}]}
+        content=verdict('invented') if failure=='citations' else verdict()
+        if failure=='schema':content={'assessment':'unrecognized'}
+        if failure=='missing':content['citations']=[]
+        return {'choices':[{'finish_reason':'stop','message':{'content':json.dumps(content)}}]}
+    triage.ai.transport=transport
+    result=triage.run(incident(),TriageRequest(),{'techniques':{}})
+    assert expected in result['errors'][0]
+    assert result['status']=='NEEDS_REVIEW' and not result['automatic_case_change']
+    assert result['verdict']['assessment']=='insufficient_evidence'
+    assert triage.latest('case-one')['result'] is None
+    assert all(value not in json.dumps(result) for value in ['test-triage-key','sensitive provider body','private network detail'])
