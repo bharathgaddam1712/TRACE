@@ -4,7 +4,7 @@ Run PowerShell from the TRACE repository. Keep secrets in `.env`; do not put the
 
 ## Current validation
 
-- After the oversized-record recovery fix, all 88 Python tests passed in 137.10 seconds; run log: `out/record-boundary-final-tests.txt` (one existing Starlette/httpx deprecation warning).
+- After structured Markdown reporting was added, all 100 Python tests passed in 173.10 seconds; run log: `out/report-final-tests.txt` (one existing Starlette/httpx deprecation warning). TypeScript and production frontend build also passed; browser visual QA was unavailable because local browser use was disabled.
 - TypeScript checking and the production Next.js build passed.
 - Sample API/UI checked: observed-access candidates and a one-hop Time-ordered path.
 - Protected reachability/path code is unchanged. The next-technique experiment has been removed.

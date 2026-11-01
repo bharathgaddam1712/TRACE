@@ -91,9 +91,12 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
       )}
       {tab === 'predict' && <div className="rise"><Lookahead incident={inc} /></div>}
       {tab === 'respond' && (
-        <div className="grid gap-5 xl:grid-cols-2 rise">
-          <div className="space-y-5"><TriagePanel incident={inc} ai={ai} /><AskPanel incident={inc} ai={ai} /></div>
-          <div className="space-y-5"><CasePanel incident={inc} onChange={(c) => setData({ ...inc, case: c })} /><Downloads incident={inc} /></div>
+          <div className="min-w-0 space-y-5 rise">
+            <TriagePanel incident={inc} ai={ai} />
+            <div className="grid gap-5 xl:grid-cols-2">
+              <AskPanel incident={inc} ai={ai} />
+              <div className="min-w-0 space-y-5"><CasePanel incident={inc} onChange={(c) => setData({ ...inc, case: c })} /><Downloads incident={inc} /></div>
+            </div>
         </div>
       )}
     </div>

@@ -14,6 +14,12 @@ const LANGUAGES = ['English', 'Hindi', 'Telugu', 'Tamil', 'Kannada', 'Malayalam'
 const base = 'rounded-lg bg-ink-900 px-3 py-2 text-[13px] ring-1 ring-line outline-none placeholder:text-fg-subtle focus:ring-brand/60';
 const field = `w-full ${base}`;
 
+function saveFile(name: string, body: string, type: string) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([body], { type }));
+  a.download = name; a.click(); URL.revokeObjectURL(a.href);
+}
+
 export function CasePanel({ incident, onChange }: { incident: Incident; onChange: (c: CaseInfo) => void }) {
   const c = incident.case;
   const [status, setStatus] = useState<CaseStatus>(c.status);
@@ -72,13 +78,18 @@ export function TriagePanel({ incident, ai }: { incident: Incident; ai?: AIStatu
     try { latest.setData(await api(`/incidents/${incident.id}/triage/review`, { method: 'POST', body: { context_hash: result.context_hash, decision, note } })); setNote(''); }
     catch (e) { setErr((e as Error).message); }
   };
+  const downloadReport = async () => {
+    setErr('');
+    try { saveFile(`trace-incident-${incident.id}-ai-triage.md`, await api<string>(`/incidents/${incident.id}/triage/report`), 'text/markdown;charset=utf-8'); }
+    catch (e) { setErr((e as Error).message); }
+  };
   const v = result?.verdict;
   const tone = v?.assessment === 'attack_suspected' ? '#b8432f' : v?.assessment === 'likely_benign' ? '#5d8f6a' : '#c9902f';
   return (
     <Card>
       <CardHeader icon={<Bot className="size-4" />} title="AI triage agent" subtitle="Advisory verdict with cited evidence — an analyst always makes the final call"
         action={<Button variant="primary" onClick={run} disabled={busy}>{busy ? <Loader2 className="size-3.5 animate-spin" /> : <Bot className="size-3.5" />}{result ? 'Re-run' : 'Run triage'}</Button>} />
-      <div className="px-5 pb-5 space-y-4">
+      <div className="min-w-0 px-5 pb-5 space-y-4 [overflow-wrap:anywhere]">
         {!ai?.enabled && <p className="rounded-lg bg-med/10 px-3 py-2 text-xs text-med ring-1 ring-med/25">No AI provider key configured — triage will return <Mono>insufficient_evidence</Mono> and keep the case open. Set <Mono>SARVAM_API_KEY</Mono> on the API server to enable it.</p>}
         {err && <p className="text-xs text-crit">{err}</p>}
         {!v ? <Empty title="No triage run yet">Run the agent to get a P1–P3 priority, rationale, contradicting evidence and next checks.</Empty> : (
@@ -86,14 +97,20 @@ export function TriagePanel({ incident, ai }: { incident: Incident; ai?: AIStatu
             <div className="flex flex-wrap items-center gap-2">
               <span className="rounded-md px-2.5 py-1 text-xs font-semibold" style={{ color: tone, background: `${tone}1a`, boxShadow: `inset 0 0 0 1px ${tone}55` }}>{v.assessment.replace(/_/g, ' ')}</span>
               <Chip>{v.priority}</Chip><Chip>{v.severity}</Chip><Chip tone="muted">{result!.status.replace(/_/g, ' ').toLowerCase()}</Chip>
+              <Button onClick={downloadReport} disabled={!!result!.errors?.length} className="ml-auto"
+                title="Download the saved, validated AI assessment with evidence references"><Download className="size-3.5" />AI triage (.md)</Button>
             </div>
             <p className="text-[13px] leading-relaxed text-fg-muted">{v.rationale}</p>
-            <div className="grid gap-3 sm:grid-cols-3">
+            {/* Fit columns to the panel, not the viewport; long evidence IDs
+                and local paths must wrap rather than cross card boundaries. */}
+            <div className="grid gap-3 grid-cols-[repeat(auto-fit,minmax(min(100%,18rem),1fr))]">
               {([['Contradicting', v.contradictory_evidence], ['Missing', v.missing_evidence], ['Next checks', v.next_checks]] as const).map(([k, list]) => (
-                <div key={k} className="rounded-lg bg-ink-900/60 p-3 ring-1 ring-line">
-                  <div className="text-[11px] uppercase tracking-[0.12em] text-fg-subtle">{k}</div>
-                  <ul className="mt-1.5 space-y-1 text-xs text-fg-muted">{list.length ? list.map((x, i) => <li key={i}>• {x}</li>) : <li className="text-fg-subtle">—</li>}</ul>
-                </div>
+                <section key={k} className="min-w-0 rounded-lg bg-ink-900/60 p-4 ring-1 ring-line" aria-label={k}>
+                  <h4 className="text-[11px] uppercase tracking-[0.12em] text-fg-subtle">{k}</h4>
+                  {list.length ? <ul className="mt-2 list-disc space-y-2 pl-4 text-[13px] leading-relaxed text-fg-muted">
+                    {list.map((x, i) => <li key={i}>{x}</li>)}
+                  </ul> : <p className="mt-2 text-xs text-fg-subtle">—</p>}
+                </section>
               ))}
             </div>
             {result!.errors?.length ? <p className="text-xs text-med">{result!.errors.join(' · ')}</p> : null}
@@ -115,7 +132,7 @@ export function TriagePanel({ incident, ai }: { incident: Incident; ai?: AIStatu
   );
 }
 
-type Answer = { answer?: string; citations?: string[]; next_checks?: string[]; hypotheses?: unknown[]; cached?: boolean };
+type Answer = { answer?: string; citations?: string[]; next_checks?: string[]; hypotheses?: unknown[]; cached?: boolean; report_markdown?: string };
 export function AskPanel({ incident, ai }: { incident: Incident; ai?: AIStatus }) {
   const [task, setTask] = useState('summary');
   const [question, setQuestion] = useState('');
@@ -144,10 +161,11 @@ export function AskPanel({ incident, ai }: { incident: Incident; ai?: AIStatus }
         <Button variant="primary" onClick={ask} disabled={!ai?.enabled || busy}>{busy && <Loader2 className="size-3.5 animate-spin" />}Ask</Button>
         {err && <p className="text-xs text-crit">{err}</p>}
         {out && (
-          <div className="rounded-lg bg-ink-900/60 p-4 ring-1 ring-line space-y-2 rise">
+          <div className="min-w-0 rounded-lg bg-ink-900/60 p-4 ring-1 ring-line space-y-2 rise [overflow-wrap:anywhere]">
             <p className="whitespace-pre-wrap text-[13px] leading-relaxed">{out.answer}</p>
             {out.next_checks?.length ? <ul className="text-xs text-fg-muted">{out.next_checks.map((x, i) => <li key={i}>• {x}</li>)}</ul> : null}
             {out.citations?.length ? <div className="flex flex-wrap gap-1">{out.citations.map((c) => <Chip key={c} tone="muted">{c.slice(0, 12)}…</Chip>)}</div> : null}
+            {out.report_markdown && <Button onClick={() => saveFile(`trace-incident-${incident.id}-ai-analysis.md`, out.report_markdown!, 'text/markdown;charset=utf-8')}><Download className="size-3.5" />AI analysis (.md)</Button>}
           </div>
         )}
       </div>
@@ -156,18 +174,13 @@ export function AskPanel({ incident, ai }: { incident: Incident; ai?: AIStatus }
 }
 
 export function Downloads({ incident }: { incident: Incident }) {
-  const save = (name: string, body: string, type: string) => {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([body], { type }));
-    a.download = name; a.click(); URL.revokeObjectURL(a.href);
-  };
-  const report = async () => save(`trace-incident-${incident.id}.md`, await api<string>(`/incidents/${incident.id}/report`), 'text/markdown');
+  const report = async () => saveFile(`trace-incident-${incident.id}.md`, await api<string>(`/incidents/${incident.id}/report`), 'text/markdown;charset=utf-8');
   return (
     <Card>
       <CardHeader icon={<Download className="size-4" />} title="Export" subtitle="Hand off to ticketing or IR" />
       <div className="flex flex-wrap gap-2 px-5 pb-5">
-        <Button onClick={report}><Download className="size-3.5" />Report (.md)</Button>
-        <Button onClick={() => save(`trace-incident-${incident.id}.json`, JSON.stringify(incident, null, 2), 'application/json')}><Download className="size-3.5" />Incident (.json)</Button>
+        <Button onClick={report}><Download className="size-3.5" />Evidence report (.md)</Button>
+        <Button onClick={() => saveFile(`trace-incident-${incident.id}.json`, JSON.stringify(incident, null, 2), 'application/json')}><Download className="size-3.5" />Incident (.json)</Button>
       </div>
     </Card>
   );

@@ -21,6 +21,7 @@ from tracekc.label import load_mapping
 from tracekc.timeutil import timestamp
 from tracekc.graph_algorithms import GraphIndex
 from tracekc.triage import TriagePipeline,TriageRequest,TriageReview
+from tracekc.reports import incident_report,triage_report
 
 
 class Store:
@@ -283,7 +284,8 @@ def create_app(out_dir: Path, ai_service=None) -> FastAPI:
 
     @app.get('/incidents/{inc_id}/report', response_class=PlainTextResponse)
     def report(inc_id: int):
-        return get(inc_id)['narrative']
+        return PlainTextResponse(incident_report(get(inc_id)),media_type='text/markdown',
+            headers={'Content-Disposition':f'attachment; filename="trace-incident-{inc_id}.md"'})
 
     @app.post('/incidents/{inc_id}/case')
     def update_case(inc_id: int, update: CaseUpdate):
@@ -298,7 +300,18 @@ def create_app(out_dir: Path, ai_service=None) -> FastAPI:
 
     @app.get('/incidents/{inc_id}/triage')
     def get_triage(inc_id:int):
-        return triage.latest(fingerprint(get(inc_id)))
+        inc=get(inc_id);state=triage.latest(fingerprint(inc))
+        if state['result']:
+            state['result']['report_draft']=triage_report(inc,state['result'],state['reviews'])
+        return state
+
+    @app.get('/incidents/{inc_id}/triage/report',response_class=PlainTextResponse)
+    def download_triage(inc_id:int):
+        inc=get(inc_id);state=triage.latest(fingerprint(inc))
+        if not state['result']:
+            raise HTTPException(404,'No saved triage result; run triage first')
+        return PlainTextResponse(triage_report(inc,state['result'],state['reviews']),media_type='text/markdown',
+            headers={'Content-Disposition':f'attachment; filename="trace-incident-{inc_id}-ai-triage.md"'})
 
     @app.post('/incidents/{inc_id}/triage')
     def run_triage(inc_id:int,request:TriageRequest):

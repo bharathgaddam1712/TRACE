@@ -81,6 +81,20 @@ For an interactive development session, run the API in one terminal and the fron
 
 Sample example: in incident 1, open the graph and select **User: vreddy → Host: WS-HR-013** in the Time-ordered path finder. Findings depend on the input; an empty reachable list is valid when supported access is absent.
 
+### Markdown handoff reports
+
+- **AI triage (.md)**, in the triage panel: exports the saved validated Sarvam
+  assessment, full event references, contradicting observations, missing evidence,
+  investigation plan, scope/omissions, provenance and analyst review record.
+- **AI analysis (.md)**, after an Assistant answer: exports that analysis with
+  citations, hypotheses, checks and any explicitly labeled draft mappings/rules.
+- **Evidence report (.md)**, in Export: exports the incident overview, complete
+  published step timeline and observed-access reachability without presenting an AI verdict.
+
+Reports use consistent headings and metadata tables, preserve UTC timestamp
+precision and full event identifiers, and distinguish observations from advisory
+assessments. Downloading a saved report does not call Sarvam or reprocess logs.
+
 ## Architecture
 
 ```mermaid

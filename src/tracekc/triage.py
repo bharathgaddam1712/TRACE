@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from tracekc.ai import AIError, AIRequest, SarvamService, redact
 from tracekc.timeutil import timestamp
+from tracekc.reports import triage_report
 
 
 class TriageRequest(BaseModel):
@@ -124,9 +125,11 @@ class TriagePipeline:
 
     def latest(self,fingerprint):
         with sqlite3.connect(self.db) as con:
-            row=con.execute('SELECT result FROM triage_results WHERE fingerprint=? ORDER BY created_at DESC LIMIT 1',(fingerprint,)).fetchone()
+            row=con.execute('SELECT result,created_at FROM triage_results WHERE fingerprint=? ORDER BY created_at DESC LIMIT 1',(fingerprint,)).fetchone()
             reviews=con.execute('SELECT context_hash,ts,decision,note FROM triage_reviews WHERE fingerprint=? ORDER BY id DESC LIMIT 20',(fingerprint,)).fetchall()
-        return {'result':json.loads(row[0]) if row else None,
+        result=json.loads(row[0]) if row else None
+        if result is not None:result.setdefault('created_at',row[1])
+        return {'result':result,
                 'reviews':[dict(zip(('context_hash','ts','decision','note'),r)) for r in reviews]}
 
     def review(self,fingerprint,review:TriageReview):
@@ -147,7 +150,9 @@ class TriagePipeline:
                                      'investigate':request.investigate},sort_keys=True).encode()).hexdigest()
         with sqlite3.connect(self.db) as con:
             cached=con.execute('SELECT result FROM triage_results WHERE context_hash=?',(key,)).fetchone()
-        if cached:return {**json.loads(cached[0]),'cached':True}
+        if cached:
+            result={**json.loads(cached[0]),'cached':True}
+            return {**result,'report_draft':triage_report(incident,result)}
         allowed={event for step in context['steps'] for event in step['event_ids']}
         fallback=TriageVerdict(assessment='insufficient_evidence',priority='P2',severity='medium',
                               rationale='Triage could not establish a supported assessment; analyst review is required.',
@@ -205,14 +210,14 @@ class TriagePipeline:
             except (AIError,ValueError,KeyError,TypeError):
                 errors.append('Optional investigation unavailable; triage retained for analyst review.')
         status='NEEDS_REVIEW' if errors or verdict.assessment=='insufficient_evidence' else 'PENDING_ANALYST_REVIEW'
-        report=f"# TRACE triage draft — incident {incident['id']}\n\nAssessment: {verdict.assessment}\nPriority: {verdict.priority}\n\n{verdict.rationale}\n\nEvidence: {', '.join(verdict.citations)}\n\nDraft for analyst review; no compliance determination or external dispatch."
+        now=datetime.now(timezone.utc).isoformat()
         result={'status':status,'policy':policy,'context_hash':key,'fingerprint':incident['fingerprint'],
                 'model':self.ai.model,'cached':False,'campaign':context['campaign'],
                 'grounding':{'entity_history':context['entity_history'],'duplicate_candidates':context['duplicate_candidates'],
                              'omitted_steps':context['omitted_steps']},'verdict':verdict.model_dump(),
-                'investigation':investigation,'report_draft':report,'errors':errors,'model_stages':calls,
+                'investigation':investigation,'created_at':now,'errors':errors,'model_stages':calls,
                 'seconds':round(time.perf_counter()-started,3),'advisory':True,'automatic_case_change':False}
-        now=datetime.now(timezone.utc).isoformat()
+        result['report_draft']=triage_report(incident,result)
         with sqlite3.connect(self.db) as con:
             # Do not cache transient failures; a retry after configuring/fixing the provider must work.
             if not errors:

@@ -113,17 +113,25 @@ def test_optional_investigation_shares_incident_and_validates_evidence(setup):
 def test_api_triage_review_is_bound_to_case(tmp_path,setup,monkeypatch):
     from fastapi.testclient import TestClient
     from tracekc.api import create_app
-    _,triage,_=setup
+    _,triage,calls=setup
     monkeypatch.setenv('TRACE_GRAPH_BACKEND','local');monkeypatch.setenv('TRACE_API_TOKEN','')
     row=incident();(triage.root/'incidents').mkdir()
     (triage.root/'incidents/1.json').write_text(json.dumps(row))
     (triage.root/'index.json').write_text(json.dumps([{'id':1,'fingerprint':row['fingerprint']}]))
     with TestClient(create_app(triage.root,ai_service=triage.ai)) as client:
+        assert client.get('/incidents/1/triage/report').status_code==404
         result=client.post('/incidents/1/triage',json={})
         assert result.status_code==200 and result.json()['advisory']
         assert client.get('/incidents/1/triage').json()['result']
         review={'context_hash':result.json()['context_hash'],'decision':'escalate','note':'Reviewed'}
         assert client.post('/incidents/1/triage/review',json=review).status_code==200
+        report=client.get('/incidents/1/triage/report')
+        assert report.status_code==200 and report.headers['content-type'].startswith('text/markdown')
+        assert 'trace-incident-1-ai-triage.md' in report.headers['content-disposition']
+        assert '# TRACE AI Triage Report' in report.text and 'event-60' in report.text
+        assert 'Recommended investigation plan' in report.text and 'Reviewed' in report.text
+        assert len(calls)==1  # Exporting/reviewing saved triage never calls the model.
+        assert client.get('/incidents/1/report').text.startswith('# TRACE Incident Investigation Report')
         assert client.post('/incidents/1/triage/review',json={**review,'context_hash':'0'*64}).status_code==409
 
 

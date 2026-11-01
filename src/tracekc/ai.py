@@ -17,6 +17,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from tracekc.config import load_env
+from tracekc.reports import analysis_report
 
 LANGUAGES = {'English', 'Hindi', 'Telugu', 'Tamil', 'Kannada', 'Malayalam', 'Marathi', 'Bengali', 'Gujarati', 'Punjabi', 'Odia'}
 
@@ -170,7 +171,8 @@ class SarvamService:
         with sqlite3.connect(self.path) as con:
             cached = con.execute('SELECT response FROM ai_cache WHERE key=?', (key,)).fetchone()
         if cached:
-            return {**json.loads(cached[0]), 'cached': True}
+            result={**json.loads(cached[0]), 'cached': True}
+            return {**result,'report_markdown':analysis_report(incident,result)}
         # UTF-8 byte count conservatively bounds usual tokenizer input; output includes reasoning.
         reservation = len(json.dumps(payload, ensure_ascii=False).encode()) + self.max_tokens
         outcome = 'failed'
@@ -217,6 +219,8 @@ class SarvamService:
             output = {**result.model_dump(), 'model': self.model, 'task': request.task, 'language': request.language,
                       'usage': raw.get('usage', {}), 'advisory': True, 'rule_validation': rule_validation,
                       'context_hash': key, 'omitted_steps': context['omitted_steps']}
+            output['created_at']=datetime.now(timezone.utc).isoformat()
+            output['report_markdown']=analysis_report(incident,output)
             with sqlite3.connect(self.path) as con:
                 con.execute('INSERT OR REPLACE INTO ai_cache VALUES (?, ?)', (key, json.dumps(output)))
             outcome = 'complete'

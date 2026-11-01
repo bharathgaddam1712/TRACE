@@ -169,6 +169,8 @@ def test_ai_evidence_validation_caching_and_redaction(tmp_path, investigation, m
     first=service.analyze(data,AIRequest(),mapping)
     second=service.analyze(data,AIRequest(),mapping)
     assert not first['cached'] and second['cached'] and len(calls)==1
+    assert first['report_markdown'].startswith('# TRACE AI Investigation Report')
+    assert second['report_markdown']==first['report_markdown'] and eid in first['report_markdown']
     assert 'super-secret' not in json.dumps(calls)
     assert 'test-only-key' not in json.dumps(first)
     assert service.status()['requests_today']==1
