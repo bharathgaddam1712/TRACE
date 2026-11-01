@@ -2,7 +2,7 @@
 param([string]$LogPath = 'C:\Users\bhara\OneDrive\Desktop\miti\firex-10G.log',
       [string]$Output = (Join-Path $env:LOCALAPPDATA 'TRACE\firex-full-optimized'),
       [int]$MaxTemporalEvents = 100000, [int]$Threads = [Math]::Min(4,[Environment]::ProcessorCount),
-      [string]$Memory = '2GB')
+      [string]$Memory = '1536MB')
 $ErrorActionPreference = 'Stop'
 $DemoProject = Split-Path -Parent $PSScriptRoot
 Push-Location $DemoProject

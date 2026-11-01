@@ -1,0 +1,147 @@
+{
+  "selected_profile": "firex-balanced-fresh",
+  "selection_reason": "Fastest measured complete run in this comparison, with lower sampled peak RSS and all parity checks passed.",
+  "runtime_reduction_vs_prior_percent": 7.87,
+  "sampled_rss_reduction_vs_prior_percent": 44.65,
+  "profiles": [
+    {
+      "name": "firex-under-ten",
+      "source_bytes": 6543120032,
+      "parsed_input_bytes": 6543120032,
+      "reused_input_files": 0,
+      "complete_demo_seconds": 564.157,
+      "pipeline_seconds": 562.623,
+      "peak_process_tree_rss_gib": 2.625,
+      "stage_peak_rss_bytes": {},
+      "stage_seconds": {
+        "ingest_seconds": 289.644,
+        "detect_seconds": 116.699,
+        "label_seconds": 6.719,
+        "correlate_seconds": 58.605,
+        "materialize_seconds": 79.723,
+        "total_wall_seconds": 562.623
+      },
+      "threads": 4,
+      "memory_limit": "2GB",
+      "parquet_compression": "zstd",
+      "normalized_parquet_bytes": 338320886,
+      "published_at": "2026-10-31T23:39:08.723962+00:00",
+      "quality_checks": {
+        "ingest.events": true,
+        "ingest.records_before_deduplication": true,
+        "ingest.duplicates_removed": true,
+        "ingest.valid_events": true,
+        "ingest.quarantined_rows": true,
+        "ingest.reader_rejected_records": true,
+        "ingest.reader_rejected_bytes": true,
+        "detect.detections_by_source": true,
+        "detect.detections_by_rule": true,
+        "signals": true,
+        "output": true,
+        "all_normalized_rows_checksum": true,
+        "incident_evidence_fingerprints": true
+      }
+    },
+    {
+      "name": "firex-streamed-fresh",
+      "source_bytes": 6543120032,
+      "parsed_input_bytes": 6543120032,
+      "reused_input_files": 0,
+      "complete_demo_seconds": 714.429,
+      "pipeline_seconds": 713.645,
+      "peak_process_tree_rss_gib": 1.696,
+      "stage_peak_rss_bytes": {
+        "ingest": 1252155392,
+        "detect": 1378168832,
+        "label": 907853824,
+        "correlate": 1821462528,
+        "materialize": 1592139776
+      },
+      "stage_seconds": {
+        "ingest_seconds": 385.171,
+        "detect_seconds": 143.454,
+        "label_seconds": 8.466,
+        "correlate_seconds": 76.984,
+        "materialize_seconds": 85.706,
+        "total_wall_seconds": 713.645
+      },
+      "threads": 4,
+      "memory_limit": "2GB",
+      "parquet_compression": "lz4_raw",
+      "normalized_parquet_bytes": 557644102,
+      "published_at": "2026-11-01T00:18:43.095631+00:00",
+      "quality_checks": {
+        "ingest.events": true,
+        "ingest.records_before_deduplication": true,
+        "ingest.duplicates_removed": true,
+        "ingest.valid_events": true,
+        "ingest.quarantined_rows": true,
+        "ingest.reader_rejected_records": true,
+        "ingest.reader_rejected_bytes": true,
+        "detect.detections_by_source": true,
+        "detect.detections_by_rule": true,
+        "signals": true,
+        "output": true,
+        "all_normalized_rows_checksum": true,
+        "incident_evidence_fingerprints": true
+      }
+    },
+    {
+      "name": "firex-balanced-fresh",
+      "source_bytes": 6543120032,
+      "parsed_input_bytes": 6543120032,
+      "reused_input_files": 0,
+      "complete_demo_seconds": 519.734,
+      "pipeline_seconds": 518.957,
+      "peak_process_tree_rss_gib": 1.453,
+      "stage_peak_rss_bytes": {
+        "ingest": 1382670336,
+        "detect": 1321771008,
+        "label": 922898432,
+        "correlate": 1559965696,
+        "materialize": 1422778368
+      },
+      "stage_seconds": {
+        "ingest_seconds": 264.049,
+        "detect_seconds": 109.642,
+        "label_seconds": 4.941,
+        "correlate_seconds": 54.651,
+        "materialize_seconds": 74.429,
+        "total_wall_seconds": 518.957
+      },
+      "threads": 4,
+      "memory_limit": "1536MB",
+      "parquet_compression": "zstd",
+      "normalized_parquet_bytes": 338382825,
+      "published_at": "2026-11-01T00:27:51.054981+00:00",
+      "quality_checks": {
+        "ingest.events": true,
+        "ingest.records_before_deduplication": true,
+        "ingest.duplicates_removed": true,
+        "ingest.valid_events": true,
+        "ingest.quarantined_rows": true,
+        "ingest.reader_rejected_records": true,
+        "ingest.reader_rejected_bytes": true,
+        "detect.detections_by_source": true,
+        "detect.detections_by_rule": true,
+        "signals": true,
+        "output": true,
+        "all_normalized_rows_checksum": true,
+        "incident_evidence_fingerprints": true
+      }
+    }
+  ],
+  "limitations": [
+    "Fresh normalized processing caches; OS file caches were not flushed.",
+    "Available RAM and background load differed; this was not a controlled causal comparison of codec or buffer size.",
+    "RSS is sampled resident process-tree memory, not a hard cap or a complete account of private committed memory.",
+    "No runtime bound or prediction-accuracy claim is established for an unseen 15-50 GB input."
+  ],
+  "validation": {
+    "pytest_passed": 92,
+    "nextjs_typecheck": "passed",
+    "nextjs_production_build": "passed",
+    "selected_run_parity_checks": "13 of 13 passed",
+    "local_ui": "Rendered and verified time, peak RSS, per-stage memory, model and full source bytes"
+  }
+}

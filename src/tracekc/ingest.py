@@ -167,6 +167,13 @@ def quarantine_utf8(reader, cache, key, maximum, base_offset=0, source_path=None
     return rejected,[diagnostics.name]
 
 
+def parquet_codec(settings):
+    codec=str(settings.get('parquet_compression','zstd')).lower()
+    if codec not in {'zstd','snappy','lz4_raw','uncompressed'}:
+        raise ValueError('ingest.parquet_compression must be zstd, snappy, lz4_raw or uncompressed')
+    return codec
+
+
 def ingest_chunks(con, source, fmt, settings, cache, work, reader_signature, timings):
     from tracekc.native_reader import TokenPrefetch
     enabled=(fmt=='fortigate' and settings.get('native_fortigate',True)
@@ -182,6 +189,7 @@ def _ingest_chunks(con, source, fmt, settings, cache, work, reader_signature, ti
                    and executable(str(cache/'native')) is not None)
     memory_handoff=bool(settings.get('native_in_memory',False))
     native_format=settings.get('native_format','csv')
+    codec=parquet_codec(settings)
     before=source.stat()
     immutable_signature=reader_signature+f':{before.st_size}:{before.st_mtime_ns}'
     parsed=0
@@ -213,7 +221,7 @@ def _ingest_chunks(con, source, fmt, settings, cache, work, reader_signature, ti
                 columns='{' + ', '.join(f'{lit(k)}: {lit(v)}' for k,v in ECS_COLUMNS.items()) + '}'
                 run(con,f"CREATE OR REPLACE VIEW raw AS SELECT * FROM read_json({lit(reader)},format='newline_delimited',columns={columns},filename=true,ignore_errors={str(bool(settings.get('ignore_errors',False))).lower()},maximum_object_size={int(settings['maximum_object_size'])})")
         normalize=NORMALIZE_SQL.replace('filename AS src_file',f'{lit(source)} AS src_file').replace('filename, "@timestamp"',f'{lit(source)}, "@timestamp"')
-        statement=f'COPY ({normalize}) TO {lit(temporary)} (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 122880)'
+        statement=f'COPY ({normalize}) TO {lit(temporary)} (FORMAT parquet, COMPRESSION {codec}, ROW_GROUP_SIZE 122880)'
         try:
             prepare_raw()
             if direct_native:
@@ -265,6 +273,7 @@ def ingest(con, cfg: dict, input_dir: Path, work_dir: Path) -> dict:
     if not files:
         raise FileNotFoundError(f"no supported input files under {input_dir}")
     settings = cfg['ingest']
+    codec=parquet_codec(settings)
     timings = {}
     columns = "{" + ", ".join(f"{lit(k)}: {lit(v)}" for k, v in ECS_COLUMNS.items()) + "}"
     incremental = settings.get('incremental', False)
@@ -334,7 +343,7 @@ def ingest(con, cfg: dict, input_dir: Path, work_dir: Path) -> dict:
             temporary = shard.with_suffix('.tmp.parquet')
             normalize = NORMALIZE_SQL.replace('filename AS src_file', f'{lit(source)} AS src_file')
             normalize = normalize.replace('filename, "@timestamp"', f'{lit(source)}, "@timestamp"')
-            run(con, f"COPY ({normalize}) TO {lit(temporary)} (FORMAT parquet, COMPRESSION zstd)")
+            run(con, f"COPY ({normalize}) TO {lit(temporary)} (FORMAT parquet, COMPRESSION {codec})")
             after = source.stat()
             if not append and (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                 temporary.unlink(missing_ok=True)
@@ -373,7 +382,7 @@ def ingest(con, cfg: dict, input_dir: Path, work_dir: Path) -> dict:
         run(con,f'SET memory_limit={lit(blocking_memory)}')
     try:
         with read_timing(timings, 'deduplicate_write_seconds'):
-            run(con, f"COPY ({selection}) TO {lit(events_path)} (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 122880)")
+            run(con, f"COPY ({selection}) TO {lit(events_path)} (FORMAT parquet, COMPRESSION {codec}, ROW_GROUP_SIZE 122880)")
     finally:
         run(con, f'SET threads={previous_threads}')
         run(con,f'SET memory_limit={lit(previous_memory)}')
@@ -405,7 +414,7 @@ def ingest(con, cfg: dict, input_dir: Path, work_dir: Path) -> dict:
     if settings.get('materialize_resolved_events', True) and total - bad >= int(settings.get('resolved_materialize_min_rows', 1000000)):
         resolved_path = work_dir / 'resolved_events.parquet'
         with read_timing(timings, 'resolve_entities_once_seconds'):
-            run(con, f"COPY (SELECT * FROM ev) TO {lit(resolved_path)} (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 122880)")
+            run(con, f"COPY (SELECT * FROM ev) TO {lit(resolved_path)} (FORMAT parquet, COMPRESSION {codec}, ROW_GROUP_SIZE 122880)")
             run(con, f'CREATE OR REPLACE VIEW ev AS SELECT * FROM read_parquet({lit(resolved_path)})')
     run(con, f"COPY (SELECT *, CASE WHEN ts_ms IS NULL AND host IS NULL THEN 'missing_time_and_host' WHEN ts_ms IS NULL THEN 'missing_time' ELSE 'missing_host' END AS quarantine_reason FROM bad_rows) TO {lit(work_dir.parent / 'quarantine.parquet')} (FORMAT parquet)")
     (work_dir.parent / 'ingest_manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
@@ -428,7 +437,7 @@ def ingest(con, cfg: dict, input_dir: Path, work_dir: Path) -> dict:
              **profile, 'valid_events':int(total-bad), 'parser_contract_version':1,
              'ts_min_ms': tmin, 'ts_max_ms': tmax,
              'hosts_with_ips': one(con, 'SELECT count(DISTINCT host) FROM ip_host')[0],
-             'parquet_bytes': events_path.stat().st_size}
+             'parquet_bytes': events_path.stat().st_size,'parquet_compression':codec}
     if total == bad:
         raise ValueError('no valid events with both a timestamp and host; inspect quarantine.parquet')
     log.info('ingested %s events from %s files (%s quarantined)', total, len(files), bad)

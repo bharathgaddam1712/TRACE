@@ -19,6 +19,7 @@ export default function DataPage() {
   const i = (m.ingest ?? {}) as Record<string, number> & { formats?: Record<string, number> };
   const t = m.timings ?? {};
   const stages = ['ingest', 'detect', 'label', 'correlate', 'materialize'].map((s) => ({ label: s, value: t[`${s}_seconds`] ?? 0 }));
+  const memoryStages = Object.entries(m.stage_peak_process_tree_rss_bytes ?? {}).map(([label, value]) => ({ label, value: value / 1024 ** 3 }));
   const rejected = (i.quarantined_rows ?? 0) + (i.adapter_rejected_records ?? 0) + (i.reader_rejected_records ?? 0);
   const quality = [
     ['Missing timestamp', i.missing_timestamp], ['Missing host', i.missing_host], ['Missing user', i.missing_user],
@@ -38,7 +39,7 @@ export default function DataPage() {
         <Stat label="Events" value={number.format(i.events ?? 0)} hint={`${i.input_files ?? 0} file(s) · ${bytes(i.input_bytes)}`} icon={<Database className="size-4" />} />
         <Stat label="Input quality" value={<span className="text-lg">{(m.input_quality ?? 'unknown').replace(/_/g, ' ')}</span>} hint={`${number.format(i.reader_rejected_records ?? 0)} rejected physical-line fragments · ${bytes(i.reader_rejected_bytes)} raw bytes`} icon={<FileCheck2 className="size-4" />} accent={rejected ? '#c9902f' : '#5d8f6a'} />
         <Stat label={loop.data?.complete_demo_seconds !== undefined ? 'Complete demo time' : 'Core pipeline time'} value={seconds(loop.data?.complete_demo_seconds ?? t.total_wall_seconds)} hint={`Core processing ${seconds(t.total_wall_seconds)} · models and publication included when complete`} icon={<Timer className="size-4" />} accent="#3f7f7a" />
-        <Stat label="Peak memory" value={`${(m.peak_process_tree_rss_gb ?? 0).toFixed(2)} GiB`} hint={`DuckDB buffer ${String(m.machine?.memory_limit ?? '—')} · ${String(m.machine?.threads ?? '?')} configured workers / ${String(m.machine?.cpus ?? '?')} logical CPUs`} icon={<Cpu className="size-4" />} accent="#7d68a8" />
+        <Stat label="Recorded processing peak" value={`${(m.peak_process_tree_rss_gb ?? 0).toFixed(2)} GiB`} hint={`Saved run RSS, not live UI usage · DuckDB buffer ${String(m.machine?.memory_limit ?? '—')} · ${String(m.machine?.threads ?? '?')} configured workers / ${String(m.machine?.cpus ?? '?')} logical CPUs`} icon={<Cpu className="size-4" />} accent="#7d68a8" />
       </div>
       <div className="grid gap-5 lg:grid-cols-2">
         <Card><CardHeader icon={<Gauge className="size-4" />} title="Stage timings" subtitle="Seconds per pipeline stage" />
@@ -62,6 +63,10 @@ export default function DataPage() {
             </div>
           ))}
         </div></Card>
+      {memoryStages.length > 0 && <Card><CardHeader icon={<Cpu className="size-4" />} title="Recorded memory by stage"
+        subtitle="Sampled process-tree peak RSS during this run, including Python, DuckDB and the optional ML worker. The DuckDB buffer cap is only part of total memory." />
+        <div className="px-5 pb-5"><Bars rows={memoryStages} color="#7d68a8" format={(v) => `${v.toFixed(2)} GiB`} /></div>
+      </Card>}
       <PredictionModel />
       <Card><CardHeader title="Supported log formats" subtitle={`Parser contract v${schemas.data?.version ?? '?'} · required normalized fields: ${schemas.data?.normalized_required?.join(', ') ?? '…'}`} />
         <div className="grid gap-3 px-5 pb-5 md:grid-cols-2 xl:grid-cols-3">

@@ -3,7 +3,7 @@
 # Relative paths are resolved against the project root (the parent of configs/).
 
 engine:
-  memory_limit: "5GB"        # DuckDB buffer cap; spills to temp_directory beyond this
+  memory_limit: "1536MB"        # DuckDB buffer cap; spills to temp_directory beyond this
   threads: 0                 # 0 = conservative auto (up to 4); benchmark larger counts
   blocking_threads: 4        # cap concurrent sort/join work to avoid RAM oversubscription
   blocking_memory_limit: null # optional separate buffer budget for the deduplication sort
@@ -21,6 +21,7 @@ ingest:
   chunk_bytes: 268435456     # closed large ECS/FortiGate files: cache 256 MiB chunks and resume failed reads
   incremental: true          # cache unchanged files; changed/appended files are reprocessed
   maximum_object_size: 16777216
+  parquet_compression: zstd   # validated full-file default; lz4_raw is an optional SSD/CPU tradeoff
   dedupe_events: true        # drop duplicate event ids (duplicate ingestion)
   native_fortigate: true     # optional gcc/clang lexer; portable DuckDB fallback when absent
   native_prefetch: true      # overlap one bounded native lexer chunk with SQL normalization
@@ -96,6 +97,7 @@ lookahead:
     - {pattern: ".*", weight: 1}
 
 output:
+  graph_memory_limit: "512MB" # release large SQL buffers during streamed Python graph publication
   evidence_events_in_json: 20
 
 forecast:

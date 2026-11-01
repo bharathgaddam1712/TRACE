@@ -180,8 +180,16 @@ def main(argv: list[str] | None = None) -> int:
     temporal.add_argument('--seed', type=int, default=17)
     temporal.add_argument('--negative-mode', choices=['mixed','degree_matched'], default='degree_matched')
     def temporal_command(args):
-        from tracekc.temporal import benchmark
-        report = benchmark(args.events,args.out,args.max_events,args.negatives,args.seed,args.negative_mode)
+        from tracekc.temporal import benchmark,InsufficientTemporalData
+        from tracekc.materialize import write_json
+        started=time.perf_counter()
+        try:
+            report = benchmark(args.events,args.out,args.max_events,args.negatives,args.seed,args.negative_mode)
+        except InsufficientTemporalData as exc:
+            report={'status':'unavailable','task':'future_network_interaction_ranking','attack_accuracy':None,
+                    'reason':str(exc),'seconds':round(time.perf_counter()-started,3)}
+            target=Path(args.out);target.mkdir(parents=True,exist_ok=True)
+            write_json(target/'temporal-benchmark.json',report)
         print(json.dumps(report,indent=2))
         return 0
     temporal.set_defaults(fn=temporal_command)

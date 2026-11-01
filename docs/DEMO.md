@@ -48,7 +48,7 @@ the full-file demo. The source stays outside the repository.
 
 Results, chunk caches and DuckDB spill files now default to `%LOCALAPPDATA%\TRACE`,
 outside OneDrive. `-Threads` defaults to four workers; `-Memory` defaults
-to a 2 GB DuckDB buffer limit. The process can use more memory than that buffer.
+to a 1536 MB DuckDB buffer limit. The process can use more memory than that buffer.
 Spill is capped at the smaller of 120 GB or 60% of currently free output-drive space;
 this cap does not preallocate or fill the drive. Benchmark thread counts on the demo
 machine because more workers can increase paging.

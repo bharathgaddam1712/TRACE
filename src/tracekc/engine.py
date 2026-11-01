@@ -93,3 +93,17 @@ def dicts(con, sql: str, params: list | None = None) -> list[dict]:
     cur = con.execute(sql, params or [])
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def iter_dicts(con, sql: str, params: list | None = None, batch_size=1024):
+    """Bound Python conversion memory; callers must close before another query.
+
+    Drain on close as well: DuckDB 2.x rejects new work with a pending result.
+    """
+    if batch_size<1:raise ValueError('batch_size must be positive')
+    cur=con.execute(sql,params or []);columns=[d[0] for d in cur.description]
+    try:
+        while rows:=cur.fetchmany(batch_size):
+            for row in rows:yield dict(zip(columns,row))
+    finally:
+        while cur.fetchmany(batch_size):pass

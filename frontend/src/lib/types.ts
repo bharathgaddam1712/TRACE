@@ -49,7 +49,7 @@ export interface Metrics {
   rules?: { loaded?: number; covered_techniques?: string[]; community?: Record<string, unknown>; ruleset_hash?: string };
   detect?: { detections_by_source?: Record<string, number>; detections_by_rule?: Record<string, number>; base_rules_evaluated?: number; base_rules_loaded?: number };
   signals?: Record<string, number>; output?: Record<string, number>; correlate?: Record<string, unknown>;
-  timings?: Record<string, number>; peak_process_tree_rss_gb?: number; machine?: Record<string, unknown>; label?: Record<string, unknown>;
+  timings?: Record<string, number>; peak_process_tree_rss_gb?: number; stage_peak_process_tree_rss_bytes?: Record<string, number>; machine?: Record<string, unknown>; label?: Record<string, unknown>;
 }
 
 export interface Health { status: string; incidents: number; graph_backend: string; graph_algorithms: string[] }

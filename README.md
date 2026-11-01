@@ -11,6 +11,8 @@ then return to the repository root and run:
 The launcher starts the API and console together. SOC triage is available in an
 incident's **Respond** tab. See [triage architecture](docs/TRIAGE.md).
 
+For a previously unseen jury log, use the [fresh-file demo workflow](docs/NEW_LOG_DEMO.md).
+
 For the full-file local demo, bounded attacker-technique sequences,
 and causal temporal ML experiments, see [demo commands](docs/DEMO.md) and
 [research / evaluation design](docs/TEMPORAL_RESEARCH.md). The large demo input is

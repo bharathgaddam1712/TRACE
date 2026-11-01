@@ -53,6 +53,10 @@ class TemporalMemory:
             self.evictions += 1
 
 
+class InsufficientTemporalData(ValueError):
+    """Supported input lacks enough interactions for chronological evaluation."""
+
+
 def load_interactions(path, max_events=100000):
     import duckdb
     if not 100 <= max_events <= 1000000:
@@ -72,7 +76,7 @@ def load_interactions(path, max_events=100000):
         boundary = rows[max_events][0]
         rows = [row for row in rows[:max_events] if row[0] < boundary]
     if not rows:
-        raise ValueError('No complete timestamp groups in the bounded interaction sample')
+        raise InsufficientTemporalData('No complete timestamp groups in the bounded interaction sample')
     return rows, truncated
 
 
@@ -198,14 +202,14 @@ def benchmark(events_path, out_dir, max_events=100000, negatives=10, seed=17, ne
     rows, truncated = load_interactions(events_path,max_events)
     times = sorted({row[0] for row in rows})
     if len(times) < 10:
-        raise ValueError('Need at least ten distinct timestamps for chronological evaluation')
+        raise InsufficientTemporalData('Need at least ten distinct timestamps for chronological evaluation')
     left, right = times[int(len(times)*.7)], times[int(len(times)*.85)]
     groups = {'train':[], 'validation':[], 'test':[]}
     for group in examples(rows, negatives=negatives,seed=seed,negative_mode=negative_mode):
         split = 'train' if group['ts'] < left else 'validation' if group['ts'] < right else 'test'
         groups[split].append(group)
     if any(not values for values in groups.values()):
-        raise ValueError('Need nonempty causal train, validation and test queries')
+        raise InsufficientTemporalData('Need nonempty causal train, validation and test queries')
 
     def arrays(selected):
         x = np.asarray([f for g in selected for f in g['features']], dtype=np.float32)

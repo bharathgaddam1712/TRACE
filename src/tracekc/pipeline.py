@@ -36,6 +36,7 @@ class RssSampler(threading.Thread):
         super().__init__(daemon=True)
         self.interval, self.peak, self._stop_evt = interval, 0, threading.Event()
         self.proc = psutil.Process()
+        self.stage=None;self.stage_peaks={};self._sample_lock=threading.Lock()
 
     def _rss(self) -> int:
         total = self.proc.memory_info().rss
@@ -46,14 +47,27 @@ class RssSampler(threading.Thread):
                 pass
         return total
 
+    def observe(self):
+        with self._sample_lock:
+            rss=self._rss();self.peak=max(self.peak,rss)
+            if self.stage:self.stage_peaks[self.stage]=max(self.stage_peaks.get(self.stage,0),rss)
+
+    def begin_stage(self,name):
+        with self._sample_lock:self.stage=name
+        self.observe()
+
+    def end_stage(self):
+        self.observe()
+        with self._sample_lock:self.stage=None
+
     def run(self) -> None:
         while not self._stop_evt.is_set():
-            self.peak = max(self.peak, self._rss())
+            self.observe()
             self._stop_evt.wait(self.interval)
 
     def stop(self) -> int:
-        self.peak = max(self.peak, self._rss())
-        self._stop_evt.set()
+        self.observe();self._stop_evt.set()
+        if self.is_alive():self.join()
         return self.peak
 
 
@@ -96,11 +110,14 @@ def _run_pipeline(cfg: dict, input_dir: Path, out_dir: Path, keep_work: bool = F
         t = time.perf_counter()
         log.info("stage %s ...", name)
         write_json(out_dir / 'progress.json', {'state': 'running', 'stage': name, 'timings': timings})
+        sampler.begin_stage(name)
         try:
             yield
         except Exception as exc:
             write_json(out_dir / 'progress.json', {'state': 'failed', 'stage': name, 'error': str(exc), 'timings': timings})
             raise
+        finally:
+            sampler.end_stage()
         timings[f"{name}_seconds"] = round(time.perf_counter() - t, 3)
         log.info("stage %s done in %.2fs", name, timings[f"{name}_seconds"])
 
@@ -170,6 +187,7 @@ def _run_pipeline(cfg: dict, input_dir: Path, out_dir: Path, keep_work: bool = F
     report["timings"] = timings
     report["peak_process_tree_rss_bytes"] = peak
     report["peak_process_tree_rss_gb"] = round(peak / 1024 ** 3, 3)
+    report['stage_peak_process_tree_rss_bytes']=dict(sampler.stage_peaks)
     report["machine"] = {"platform": platform.platform(), "cpus": psutil.cpu_count(),
                          "ram_gb": round(psutil.virtual_memory().total / 1024 ** 3, 1),
                          "memory_limit": cfg["engine"]["memory_limit"],

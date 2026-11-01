@@ -146,3 +146,16 @@ def test_only_successful_logon_gets_specific_lateral_edge():
         assert not any(edge[2]=='lateral' for edge in link_edges(con,cfg))
         con.execute("UPDATE signals SET evidence=? WHERE signal_id=2",[json.dumps({'action':'user_logon','outcome':'success'})])
         assert (1,2,'lateral') in link_edges(con,cfg)
+
+
+def test_optional_temporal_experiment_reports_unavailable_for_auth_only_log(tmp_path,capsys):
+    import duckdb
+    pytest.importorskip('sklearn')
+    from tracekc.cli import main
+    path=tmp_path/'events.parquet'
+    with duckdb.connect() as con:
+        con.execute("COPY (SELECT 1::BIGINT AS ts_ms,'a' AS src_ip,'b' AS dst_ip,'user_logon' AS action) TO ? (FORMAT PARQUET)",[str(path)])
+    assert main(['temporal-benchmark','--events',str(path),'--out',str(tmp_path)])==0
+    report=json.loads((tmp_path/'temporal-benchmark.json').read_text())
+    assert report['status']=='unavailable' and report['attack_accuracy'] is None
+    assert 'No complete timestamp groups' in report['reason']

@@ -16,12 +16,13 @@ import os
 import time
 from collections import defaultdict
 from functools import lru_cache
+from itertools import groupby
 from tracekc.graph_algorithms import link_decision
 from datetime import datetime, timezone
 from pathlib import Path
 
 from tracekc.correlate import evidence_dict, SIGNAL_COLS
-from tracekc.engine import dicts, run
+from tracekc.engine import dicts, iter_dicts, run
 from tracekc.sigma import lit
 from tracekc.config import project_path
 from tracekc.forecast import predict
@@ -208,21 +209,20 @@ def _narrative(inc: dict) -> str:
 
 
 def materialize(con, cfg: dict, out_dir: Path, promoted, isolated, graph, correlation_edges=()) -> dict:
-    # Assembly uses only scoring/grouping columns. Hydrate full payloads for the
-    # incident graphs and saved preview; every other full signal stays in Parquet.
-    needed={s['signal_id']:s for _,_,group in promoted for s in group}
+    # Keep full payloads for one incident at a time. Assembly's lightweight
+    # dictionaries remain small; isolated detail is bounded to the saved preview.
     preview=[]
     for _,_,group in isolated:
         for signal in group:
-            preview.append(signal);needed[signal['signal_id']]=signal
+            preview.append(signal)
             if len(preview)>=MAX_FINDINGS_JSON:break
         if len(preview)>=MAX_FINDINGS_JSON:break
-    if needed and any('event_ids' not in s for s in needed.values()):
-        extras=','.join(str(s['signal_id']) for s in preview) or 'NULL'
-        for full in dicts(con,f'''SELECT {SIGNAL_COLS} FROM signals WHERE signal_id IN
-            (SELECT signal_id FROM signal_incident WHERE incident_id IS NOT NULL)
-            OR signal_id IN ({extras})'''):
-            needed[full['signal_id']].update(full)
+    if preview and any('event_ids' not in s for s in preview):
+        lookup={s['signal_id']:s for s in preview}
+        extras=','.join(map(str,lookup))
+        for full in dicts(con,f'SELECT {SIGNAL_COLS} FROM signals WHERE signal_id IN ({extras})'):
+            lookup[full['signal_id']].update(full)
+    needs_hydration=any('event_ids' not in s for _,_,group in promoted for s in group)
     inc_dir = out_dir / "incidents"
     inc_dir.mkdir(parents=True, exist_ok=True)
     n_ids = int(cfg["output"]["evidence_events_in_json"])
@@ -235,74 +235,96 @@ def materialize(con, cfg: dict, out_dir: Path, promoted, isolated, graph, correl
     edges_by_source = defaultdict(list)
     for edge in correlation_edges:
         edges_by_source[edge[0]].append(edge)
-    for inc_id, (score, detail, sigs) in enumerate(promoted, start=1):
-        ext_ips = {ip for s in sigs for ip in (s["src_ip"], s["dst_ip"]) if _is_external(ip, host_ips)}
-        evidence_rows=[evidence_dict(s['evidence']) for s in sigs]
-        steps = [_step(k, s, n_ids, evidence_rows[k-1]) for k, s in enumerate(sigs, start=1)]
-        step_lookup = {s['signal_id']: k for k, s in enumerate(sigs, 1)}
-        features={s['signal_id']:signal_features(s) for s in sigs}
-        links = []
-        for a, b, relation in (edge for signal in step_lookup for edge in edges_by_source.get(signal, ())):
-            if a not in step_lookup or b not in step_lookup:
-                continue
-            left, right = sorted([step_lookup[a], step_lookup[b]])
-            decision=link_decision(sigs[left-1],sigs[right-1],relation,cfg['correlation'],
-                features=(features[sigs[left-1]['signal_id']],features[sigs[right-1]['signal_id']]))
-            links.append({'from_step': left, 'to_step': right, 'relation': relation,
-                          'similarity': round(decision['similarity'],4),
-                          'kind': 'observed' if relation in {'lateral', 'process_entity'} else 'inferred',
-                          'reasons': [decision['reason'],
-                                      'Association does not establish causation'],
-                          'event_ids': sorted(set(steps[left-1]['event_ids'] + steps[right-1]['event_ids']))})
-        incoming_by_step=defaultdict(list)
-        for link in links:incoming_by_step[link['to_step']].append(link)
-        for step in steps:
-            incoming = incoming_by_step[step['step']]
-            step['links'] = incoming
-            if incoming:
-                step['link'] = max(incoming, key=lambda link: (link['kind'] == 'observed', link['from_step']))
-        users = sorted({s["user_name"] for s in sigs if s["user_name"]})
-        hosts = sorted({h for s in sigs for h in (s["host"], s["src_host"], s["dst_host"]) if h})
-        cutoff = max(s['ts_last_ms'] for s in sigs)
-        reach = graph.lookahead(set(users), set(hosts), as_of_ms=cutoff)
-        lookahead_events.update(eid for candidate in reach['reachable'] for eid in candidate['evidence']['event_ids'])
-        path = _host_path(sigs)
-        tactics = []
-        for s in sigs:
-            if s["tactic_name"] and s["tactic_name"] not in tactics:
-                tactics.append(s["tactic_name"])
-        inc = {
-            "id": inc_id, "score": score,
-            "fingerprint": hashlib.sha256('|'.join(sorted({eid for s in sigs for eid in (s['event_ids'] or [])})).encode()).hexdigest(),
-            "score_interpretation": "heuristic priority score, not a probability",
-            "correlation_links": links,
-            "title": f"{tactics[0] if tactics else 'Suspicious activity'} -> {tactics[-1] if tactics else ''} "
-                     f"on {' -> '.join(path)}".replace(" ->  on", " on"),
-            "first_seen": iso(sigs[0]["ts_first_ms"]), "last_seen": iso(max(s["ts_last_ms"] for s in sigs)),
-            "tactics": tactics, "kill_chain_progression": detail["kill_chain_progression"],
-            "techniques": sorted({(s["technique"], s["technique_name"], s["tactic_name"]) for s in sigs if s["technique"]}),
-            "merged_alert_count": int(sum(s["n_detections"] for s in sigs)),
-            "raw_event_count": int(sum(s["n_events"] for s in sigs)),
-            "signal_count": len(sigs),
-            "entities": {"users": users, "hosts": hosts, "external_ips": sorted(ext_ips)},
-            "host_path": path, "host_path_text": " -> ".join(path),
-            "timeline": steps, "lookahead": reach,
-            "attribution": sorted({a for s in sigs for a in (s["authors"] or []) if a}),
-        }
-        inc["techniques"] = [{"id": t, "name": n, "tactic": tac} for t, n, tac in inc["techniques"]]
-        inc['forecast'] = predict(forecast_model, sigs[-1]['technique'], inc['first_seen'], [s['technique'] for s in sigs if s['technique']], cfg.get('forecast',{}))
-        inc["graph"] = _graph(sigs, ext_ips, reach, links, evidence_rows)
-        inc["narrative"] = _narrative(inc)
-        sequence=[]
-        for step in steps:
-            technique=step.get('technique')
-            if technique and (not sequence or sequence[-1]!=technique):sequence.append(technique)
-        histories.append({'id':inc['fingerprint'],'started_at':inc['first_seen'],'ended_at':inc['last_seen'],'techniques':sequence})
-        write_json(inc_dir / f"{inc_id}.json", inc)
-        index.append({k: inc[k] for k in ("id", "title", "score", "first_seen", "last_seen", "tactics",
-                                          "merged_alert_count", "signal_count", "host_path_text")}
-                     | {"users": users, "hosts": hosts, "fingerprint": inc['fingerprint'], 'entities':inc['entities'],
-                        'technique_ids':sorted({t for step in steps for t in step['technique_ids']})})
+    previous_memory=run(con,"SELECT current_setting('memory_limit')")[0][0]
+    graph_memory=cfg['output'].get('graph_memory_limit','512MB')
+    if graph_memory:run(con,f'SET memory_limit={lit(graph_memory)}')
+    hydrated=None
+    if needs_hydration:
+        columns=','.join('s.'+column.strip() for column in SIGNAL_COLS.split(','))
+        hydrated=iter_dicts(con,f"""SELECT {columns},a.incident_id FROM signals s
+            JOIN signal_incident a USING(signal_id) WHERE a.incident_id IS NOT NULL
+            ORDER BY a.incident_id,a.step""")
+        grouped=groupby(hydrated,key=lambda row:row['incident_id'])
+    try:
+        for inc_id, (score, detail, light_signals) in enumerate(promoted, start=1):
+            if needs_hydration:
+                assigned,records=next(grouped,(None,()))
+                if assigned!=inc_id:raise ValueError('Missing ordered incident signal payload')
+                sigs=list(records)
+                if [s['signal_id'] for s in sigs]!=[s['signal_id'] for s in light_signals]:
+                    raise ValueError('Incident payload order differs from recorded assignment')
+            else:
+                sigs=light_signals
+            ext_ips = {ip for s in sigs for ip in (s["src_ip"], s["dst_ip"]) if _is_external(ip, host_ips)}
+            evidence_rows=[evidence_dict(s['evidence']) for s in sigs]
+            steps = [_step(k, s, n_ids, evidence_rows[k-1]) for k, s in enumerate(sigs, start=1)]
+            step_lookup = {s['signal_id']: k for k, s in enumerate(sigs, 1)}
+            features={s['signal_id']:signal_features(s) for s in sigs}
+            links = []
+            for a, b, relation in (edge for signal in step_lookup for edge in edges_by_source.get(signal, ())):
+                if a not in step_lookup or b not in step_lookup:
+                    continue
+                left, right = sorted([step_lookup[a], step_lookup[b]])
+                decision=link_decision(sigs[left-1],sigs[right-1],relation,cfg['correlation'],
+                    features=(features[sigs[left-1]['signal_id']],features[sigs[right-1]['signal_id']]))
+                links.append({'from_step': left, 'to_step': right, 'relation': relation,
+                              'similarity': round(decision['similarity'],4),
+                              'kind': 'observed' if relation in {'lateral', 'process_entity'} else 'inferred',
+                              'reasons': [decision['reason'],
+                                          'Association does not establish causation'],
+                              'event_ids': sorted(set(steps[left-1]['event_ids'] + steps[right-1]['event_ids']))})
+            incoming_by_step=defaultdict(list)
+            for link in links:incoming_by_step[link['to_step']].append(link)
+            for step in steps:
+                incoming = incoming_by_step[step['step']]
+                step['links'] = incoming
+                if incoming:
+                    step['link'] = max(incoming, key=lambda link: (link['kind'] == 'observed', link['from_step']))
+            users = sorted({s["user_name"] for s in sigs if s["user_name"]})
+            hosts = sorted({h for s in sigs for h in (s["host"], s["src_host"], s["dst_host"]) if h})
+            cutoff = max(s['ts_last_ms'] for s in sigs)
+            reach = graph.lookahead(set(users), set(hosts), as_of_ms=cutoff)
+            lookahead_events.update(eid for candidate in reach['reachable'] for eid in candidate['evidence']['event_ids'])
+            path = _host_path(sigs)
+            tactics = []
+            for s in sigs:
+                if s["tactic_name"] and s["tactic_name"] not in tactics:
+                    tactics.append(s["tactic_name"])
+            inc = {
+                "id": inc_id, "score": score,
+                "fingerprint": hashlib.sha256('|'.join(sorted({eid for s in sigs for eid in (s['event_ids'] or [])})).encode()).hexdigest(),
+                "score_interpretation": "heuristic priority score, not a probability",
+                "correlation_links": links,
+                "title": f"{tactics[0] if tactics else 'Suspicious activity'} -> {tactics[-1] if tactics else ''} "
+                         f"on {' -> '.join(path)}".replace(" ->  on", " on"),
+                "first_seen": iso(sigs[0]["ts_first_ms"]), "last_seen": iso(max(s["ts_last_ms"] for s in sigs)),
+                "tactics": tactics, "kill_chain_progression": detail["kill_chain_progression"],
+                "techniques": sorted({(s["technique"], s["technique_name"], s["tactic_name"]) for s in sigs if s["technique"]}),
+                "merged_alert_count": int(sum(s["n_detections"] for s in sigs)),
+                "raw_event_count": int(sum(s["n_events"] for s in sigs)),
+                "signal_count": len(sigs),
+                "entities": {"users": users, "hosts": hosts, "external_ips": sorted(ext_ips)},
+                "host_path": path, "host_path_text": " -> ".join(path),
+                "timeline": steps, "lookahead": reach,
+                "attribution": sorted({a for s in sigs for a in (s["authors"] or []) if a}),
+            }
+            inc["techniques"] = [{"id": t, "name": n, "tactic": tac} for t, n, tac in inc["techniques"]]
+            inc['forecast'] = predict(forecast_model, sigs[-1]['technique'], inc['first_seen'], [s['technique'] for s in sigs if s['technique']], cfg.get('forecast',{}))
+            inc["graph"] = _graph(sigs, ext_ips, reach, links, evidence_rows)
+            inc["narrative"] = _narrative(inc)
+            sequence=[]
+            for step in steps:
+                technique=step.get('technique')
+                if technique and (not sequence or sequence[-1]!=technique):sequence.append(technique)
+            histories.append({'id':inc['fingerprint'],'started_at':inc['first_seen'],'ended_at':inc['last_seen'],'techniques':sequence})
+            write_json(inc_dir / f"{inc_id}.json", inc)
+            index.append({k: inc[k] for k in ("id", "title", "score", "first_seen", "last_seen", "tactics",
+                                              "merged_alert_count", "signal_count", "host_path_text")}
+                         | {"users": users, "hosts": hosts, "fingerprint": inc['fingerprint'], 'entities':inc['entities'],
+                            'technique_ids':sorted({t for step in steps for t in step['technique_ids']})})
+    finally:
+        if hydrated is not None:hydrated.close()
+        if graph_memory:run(con,f'SET memory_limit={lit(previous_memory)}')
     findings = []
     for score, detail, sigs in isolated:
         for s in sigs:

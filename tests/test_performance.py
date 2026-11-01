@@ -338,3 +338,34 @@ def test_native_prefetch_failure_reaches_foreground_before_checkpoint(tmp_path,m
         with pytest.raises(ValueError,match='Invalid unicode'):
             reader.get(source,tmp_path,1024,offset=6,length=7)
     assert not list(tmp_path.glob('*.checkpoint.json'))
+
+
+def test_streamed_dictionary_batches_drain_when_closed(tmp_path):
+    import duckdb
+    from tracekc.engine import iter_dicts,run
+    con=duckdb.connect()
+    try:
+        rows=iter_dicts(con,'SELECT range AS n FROM range(10000)',batch_size=3)
+        assert next(rows)=={'n':0}
+        rows.close()
+        assert run(con,'SELECT 42')==[(42,)]
+        assert list(iter_dicts(con,'SELECT 1 AS n WHERE FALSE',batch_size=2))==[]
+        with pytest.raises(ValueError):list(iter_dicts(con,'SELECT 1',batch_size=0))
+    finally:con.close()
+
+
+def test_stage_rss_tracks_peaks_separately(monkeypatch):
+    from tracekc.pipeline import RssSampler
+    sampler=RssSampler();values=iter([5,9,4,3,6,2])
+    monkeypatch.setattr(sampler,'_rss',lambda:next(values))
+    sampler.begin_stage('read');sampler.observe();sampler.end_stage()
+    sampler.begin_stage('graph');sampler.observe();sampler.end_stage()
+    assert sampler.peak==9 and sampler.stage_peaks=={'read':9,'graph':6}
+
+
+def test_parquet_codec_is_explicit_and_rejects_sql_fragments():
+    from tracekc.ingest import parquet_codec
+    assert parquet_codec({})=='zstd'
+    assert parquet_codec({'parquet_compression':'LZ4_RAW'})=='lz4_raw'
+    with pytest.raises(ValueError,match='parquet_compression'):
+        parquet_codec({'parquet_compression':"zstd); DROP TABLE events; --"})

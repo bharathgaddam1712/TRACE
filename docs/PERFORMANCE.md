@@ -19,7 +19,7 @@ The target is a measured complete local demo below 600 seconds on the supplied
   The optional RAM handoff remains available; it is not the default. Malformed
   chunks are materialized only when byte quarantine requires them.
 * Global deduplication retains the original earliest-timestamp policy. Its sort
-  has four workers and a 2 GB buffer budget in the optimized launcher. The same
+  has four workers and a 1536 MB buffer budget in the optimized launcher. The same
   configurable cap applies to each stage; whole-process memory can exceed it.
 * Large datasets resolve process lifetimes and IP/host ownership once into Parquet.
   Detection and access-graph queries reuse that result instead of repeating ASOF
@@ -40,7 +40,7 @@ The target is a measured complete local demo below 600 seconds on the supplied
   computes capped evidence unions from capped inputs, and omits the search
   adjacency index until an API search actually needs it. All saved edges remain.
 * The optimized launcher uses four workers for scans, reads and blocking queries
-  based on local comparisons. It uses a configurable DuckDB buffer limit (2 GB default), and scratch storage outside OneDrive. Disk spill is
+  based on local comparisons. It uses a configurable DuckDB buffer limit (1536 MB default), and scratch storage outside OneDrive. Disk spill is
   bounded by available space: at most 120 GB and at most 60% of currently free
   space. Other applications and filesystem caching affect results; maximum thread
   count is not a universal optimum. Whole-process memory can exceed the buffer cap.
@@ -67,7 +67,7 @@ Install dependencies once with `scripts/setup.ps1` or
 For explicit arguments:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/run_optimized_demo.py --input "C:\Users\bhara\OneDrive\Desktop\miti\firex-10G.log" --threads 4 --memory 2GB
+.\.venv\Scripts\python.exe scripts/run_optimized_demo.py --input "C:\Users\bhara\OneDrive\Desktop\miti\firex-10G.log" --threads 4 --memory 1536MB
 ```
 
 The default output is `%LOCALAPPDATA%\TRACE\firex-full-optimized`. Use a fresh
@@ -148,3 +148,63 @@ To open these measured results, use the actual output directory from the runner:
 The Next.js banner displays this run's saved duration and publication time. The
 Data page and Predict tab show the fitted model, its training cutoff, provenance,
 warnings, a JSON download, and a link to an eligible incident.
+
+## Memory and unseen-file demo work
+
+The UI's processing peak is a saved process-tree RSS measurement, not live browser
+or API usage. DuckDB's buffer limit excludes some reader, Python and worker memory;
+Windows paging can also reduce resident memory while increasing runtime. A lower
+RSS number alone does not establish a faster implementation.
+
+Graph publication now fetches ordered signal payloads in batches and retains one
+incident's full payload at a time, plus the existing 2,000-finding preview. It does
+not retain every promoted signal's full evidence in Python. Complete signals and
+evidence remain in the saved Parquet files, and assignment order is checked.
+A separate 512 MB graph-phase DuckDB budget releases scan/sort buffers during
+Python graph generation; the preceding budget is restored before final exports.
+The metrics report and Data page include sampled peak RSS for each stage.
+
+An LZ4 intermediate-codec trial passed all 13 parity checks but took 714.429 seconds
+with 1.696 GiB sampled peak RSS. Despite a faster small COPY micro-test, it did not
+beat the complete 564.157-second ZSTD baseline. ZSTD therefore remains the default;
+`--parquet-codec lz4_raw` is an explicit experiment, not a promised speedup.
+Measurements were taken under different available-RAM conditions, not a controlled
+hardware comparison. Do not attribute every timing or RSS difference to the codec.
+
+For an authentication-only input, insufficient temporal network interactions now
+produce an explicit unavailable report for that optional experiment, while genuine
+configuration/provider/programming errors still fail. This does not manufacture
+forecasts or skip the main full-file detection pipeline.
+
+Use a new output directory when judging unseen-file speed. See
+[fresh-file demo instructions](NEW_LOG_DEMO.md). The fastest verified historical
+full-file result remains the recorded benchmark above until a faster complete
+run is measured and checked.
+
+## Selected balanced profile (1 November 2026)
+
+The final fresh-processing run took **519.734 seconds (8 min 40 sec)** with
+**1.453 GiB sampled peak RSS**, using four workers, a **1536 MB DuckDB buffer**,
+ZSTD intermediate Parquet and streamed graph publication with its 512 MB budget.
+It processed all 6,543,120,032 bytes and reused zero input files. The existing
+100,000-interaction temporal experiment was included and ran in parallel.
+All 13 parity checks passed against the 564.157-second reference, including all
+normalized-row checksums and all 1,940 incident evidence fingerprints.
+
+| Profile | Complete seconds | Sampled peak RSS (GiB) |
+|---|---:|---:|
+| Prior 2 GB ZSTD baseline | 564.157 | 2.625 |
+| Rejected 2 GB LZ4 trial with streamed graphs | 714.429 | 1.696 |
+| Selected 1536 MB ZSTD profile with streamed graphs | 519.734 | 1.453 |
+
+The selected run measured 7.87% less time and 44.65% lower sampled peak RSS than
+the preceding best run. These are observed run differences, not isolated causal
+estimates: available RAM and background load differed between measurements.
+The 1536 MB setting is now the demo and core configuration default. The old
+8 min/9 min/11 min values are historical measurements with their recorded settings;
+they do not describe live dashboard memory or a guarantee for new file sizes.
+
+See [sanitized profile comparison](../data/benchmarks/memory_profiles_2026-11-01.json).
+The selected results are in the runner's `firex-balanced-fresh` output directory.
+Use the [new-log workflow](NEW_LOG_DEMO.md) for a jury-supplied input instead of
+replaying saved results as a fresh-processing measurement.

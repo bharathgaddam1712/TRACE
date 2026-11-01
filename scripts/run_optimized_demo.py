@@ -27,7 +27,8 @@ def main(awake_guard=False):
     parser.add_argument('--input', required=True)
     parser.add_argument('--out', default=str(local/'firex-full-optimized'))
     parser.add_argument('--threads', type=int, default=min(4,psutil.cpu_count() or 4))
-    parser.add_argument('--memory', default='2GB')
+    parser.add_argument('--memory', default='1536MB')
+    parser.add_argument('--parquet-codec',choices=['zstd','lz4_raw','snappy','uncompressed'],default='zstd')
     parser.add_argument('--temporal-events', type=int, default=100000,
                         help='Bounded optional network ML experiment; 0 disables. Core pipeline reads the full file.')
     args = parser.parse_args()
@@ -35,9 +36,12 @@ def main(awake_guard=False):
     free = shutil.disk_usage(output).free
     spill_gb = max(1, min(120, int(free*.6/1e9)))
     cfg = load_config(overrides=[f'engine.threads={args.threads}',f'engine.memory_limit={args.memory}',
-        f'engine.max_temp_directory_size={spill_gb}GB','engine.profile_queries=true',f'engine.blocking_memory_limit={args.memory}'])
+        f'ingest.parquet_compression={args.parquet_codec}',f'engine.max_temp_directory_size={spill_gb}GB','engine.profile_queries=true',f'engine.blocking_memory_limit={args.memory}'])
     cfg['engine']['temp_directory'] = str(output.parent/'spill')
     logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+    available_ram=psutil.virtual_memory().available
+    logging.info('Starting full-file run: %s workers, %s DuckDB buffer, %.2f GiB available RAM, %.1f GiB free output disk',
+                 args.threads,args.memory,available_ram/2**30,free/2**30)
     started = time.perf_counter();timings={};worker=None
     def start_temporal(events):
         nonlocal worker
@@ -75,7 +79,9 @@ def main(awake_guard=False):
         stage=time.perf_counter()
         if worker.wait()!=0:raise RuntimeError('Temporal experiment failed; inspect '+str(output/'temporal-worker.log'))
         timings['temporal_wait_after_pipeline_seconds']=round(time.perf_counter()-stage,3)
-        timings['temporal_experiment_seconds']=json.loads((output/'temporal-benchmark.json').read_text())['seconds']
+        temporal_report=json.loads((output/'temporal-benchmark.json').read_text())
+        timings['temporal_experiment_seconds']=temporal_report['seconds']
+        timings['temporal_status']=temporal_report.get('status','complete')
         timings['temporal_experiment_parallel']=True
     timings['complete_demo_seconds']=round(time.perf_counter()-started,3)
     timings['under_ten_minutes']=timings['complete_demo_seconds']<600
@@ -83,6 +89,8 @@ def main(awake_guard=False):
     timings['awake_request_active']=bool(awake_guard)
     timings['threads']=args.threads;timings['memory_limit']=args.memory
     timings['spill_cap_gb']=spill_gb;timings['source_bytes']=Path(args.input).stat().st_size
+    timings['parquet_compression']=args.parquet_codec
+    timings['initial_available_ram_bytes']=available_ram;timings['initial_free_disk_bytes']=free
     write_json(output/'demo_timings.json',timings)
     print(json.dumps({'output':str(output),**timings},indent=2))
 
