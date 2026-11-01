@@ -40,6 +40,8 @@ def test_planted_chain_rebuilt_in_order_inside_dense_noise(dense):
     assert res["incident"]["path_rate"] == 1.0
     assert res["false_incident_rate"] == 0.0
     inc = json.loads((out / "incidents" / "1.json").read_text())
+    assert 'forecast' not in inc
+    assert 'lookahead' in inc and 'reachable' in inc['lookahead']
     assert [s["technique"] for s in inc["timeline"]] == ["T1110", "T1059.001", "T1547.001", "T1071.001",
                                                          "T1021.001", "T1048"]
     assert inc["host_path"] == ["WS-HR-012", "SRV-FILE-01"]

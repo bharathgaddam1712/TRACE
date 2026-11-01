@@ -225,33 +225,3 @@ class SarvamService:
             with sqlite3.connect(self.path) as con:
                 con.execute('INSERT INTO ai_audit VALUES (?, ?, ?, ?, ?)',
                             (datetime.now(timezone.utc).isoformat(), request.task, self.model, key, outcome))
-
-    def predict_next(self,history,catalog):
-        """Explicit opt-in model comparison; only past technique IDs enter the prompt."""
-        if not self.key:raise AIError('Set SARVAM_API_KEY before requesting a Sarvam forecast comparison',503)
-        if not history or len(history)>100:raise AIError('Forecast history must contain 1 to 100 techniques',422)
-        schema={'type':'object','additionalProperties':False,'required':['technique_ids','explanation'],
-                'properties':{'technique_ids':{'type':'array','items':{'type':'string'},'maxItems':5},'explanation':{'type':'string'}}}
-        payload={'model':self.model,'reasoning_effort':self.effort,'max_tokens':self.max_tokens,
-                 'messages':[{'role':'system','content':'Rank up to five plausible next MITRE ATT&CK techniques using only the observed prefix. The actual next technique is withheld. Return distinct IDs from the catalog, or an empty list if unknown. These are hypotheses, not confirmed activity.'},
-                             {'role':'user','content':json.dumps({'observed_prefix':history,'catalog':catalog})}],
-                 'response_format':{'type':'json_schema','json_schema':{'name':'trace_forecast','strict':True,'schema':schema}}}
-        key=hashlib.sha256(('forecast-v1:'+json.dumps(payload,sort_keys=True)).encode()).hexdigest()
-        with sqlite3.connect(self.path) as con:
-            cached=con.execute('SELECT response FROM ai_cache WHERE key=?',(key,)).fetchone()
-        if cached:return json.loads(cached[0])
-        self._reserve(len(json.dumps(payload).encode())+self.max_tokens)
-        try:
-            raw=self.transport(payload)
-            if raw['choices'][0]['finish_reason']!='stop':raise AIError('Sarvam forecast response was incomplete')
-            result=json.loads(raw['choices'][0]['message']['content'])
-            ids=result['technique_ids']
-            if not isinstance(ids,list) or len(ids)>5 or any(not isinstance(t,str) or t not in catalog for t in ids) or len(set(ids))!=len(ids):
-                raise AIError('Sarvam returned an invalid forecast technique')
-            if not isinstance(result['explanation'],str):raise AIError('Invalid forecast explanation')
-        except (KeyError,TypeError,ValueError):raise AIError('Sarvam forecast failed schema validation') from None
-        except (OSError,urllib.error.HTTPError):raise AIError('Sarvam forecast request failed; check key, credits, model access and connectivity') from None
-        with sqlite3.connect(self.path) as con:
-            con.execute('INSERT OR REPLACE INTO ai_cache VALUES (?,?)',(key,json.dumps(result)))
-            con.execute('INSERT INTO ai_audit VALUES (?,?,?,?,?)',(datetime.now(timezone.utc).isoformat(),'forecast_comparison',self.model,key,'complete'))
-        return result

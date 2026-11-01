@@ -33,7 +33,7 @@ def setup(tmp_path,monkeypatch):
     work=tmp_path/'work';work.mkdir()
     with duckdb.connect() as con:
         con.execute('CREATE TABLE events(host VARCHAR,action VARCHAR,outcome VARCHAR,ts_ms BIGINT)')
-        from tracekc.forecast import timestamp
+        from tracekc.timeutil import timestamp
         before=int(timestamp('2026-10-20T09:00:00Z').timestamp()*1000)
         con.executemany('INSERT INTO events VALUES (?,?,?,?)',[
             ('HOST','user_logon','failure',before),('HOST','user_logon','success',before+7200000)])

@@ -14,15 +14,12 @@ $JuryOutput = Join-Path $env:LOCALAPPDATA ('TRACE\jury-' + (Get-Date -Format 'yy
 
 Open http://127.0.0.1:3001/data. Confirm the banner shows the new `jury-...` run,
 publication time and input size. A new output directory has no normalized
-processing cache. The full file is read; only the optional network ML experiment
-is capped at 100,000 interactions. The launcher requires completed results and
+processing cache. The full file is read. The launcher requires completed results and
 free ports; choose other ports if 3001 or 8002 is occupied.
 
 Supported readers are FortiGate key/value, ECS JSON/NDJSON, supported CSV and
 syslog layouts. A `.log` extension alone does not establish a supported schema.
-Malformed records are accounted for; unsupported input fails visibly. An input
-without sufficient incident sequences or network interactions can legitimately
-have no fitted forecast or temporal experiment. An empty next-asset panel means
+Malformed records are accounted for; unsupported input fails visibly.  An empty next-asset panel means
 that incident lacks qualifying historical access evidence.
 
 The 1536 MB setting is a DuckDB buffer budget, not a total Python/process-tree cap.

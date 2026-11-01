@@ -72,32 +72,6 @@ Synchronization uses parameterized queries, composite uniqueness constraints, 50
 
 A portable Neo4j Community 5.26.32 instance with Java 21 was used for live integration testing on this machine because its Docker engine was unavailable. Its runtime files are under Git-ignored `out/runtime`, and it binds to localhost. The shipped Compose setup is the reproducible deployment path.
 
-## Historical next-technique model
-
-History format:
-
-```json
-{"label_source":"analyst_reviewed", "incidents":[
-  {"id":"case-1", "started_at":"2026-10-01T01:00:00Z", "ended_at":"2026-10-01T02:00:00Z",
-   "techniques":["T1110","T1059.001","T1547.001"]}
-]}
-```
-
-Use many independently reviewed histories across distinct dates; the single example above is only a schema illustration. Do not treat TRACE's own inferred labels as independent ground truth.
-
-```powershell
-# Export unreviewed sequences for review (does not establish ground truth):
-.\.venv\Scripts\python.exe -m tracekc export-history --out out/firex-real --save out/firex-real/histories.json
-# Compare majority, first-order and second-order Markov baselines:
-.\.venv\Scripts\python.exe -m tracekc forecast-benchmark --input reviewed-histories.json --train-before 2026-10-15T00:00:00Z --test-after 2026-10-22T00:00:00Z --out out/firex-real/forecast-comparison.json --model-out out/firex-real/forecast-model.json
-```
-
-Omitting both time cutoffs selects 70%/85% cut points from distinct incident start times (at least 10 required). Whole incidents crossing boundaries are excluded. Models are selected on validation MRR/top-1, refitted only on pre-test incidents, and compared on untouched later incidents. Reports include top-1, top-3, MRR, coverage, split counts and label provenance. Model artifacts have a source hash and training cutoff; inference refuses a model trained after the incident began.
-
-Add `--sarvam --sarvam-limit 5` for an explicit, credit-consuming Sarvam comparison on a bounded number of held-out prefixes. Only the observed technique prefix and catalog are sent; the actual next technique is withheld. No Sarvam performance result is claimed until that command is run with a valid key. It does not silently change the model selected using validation.
-
-Enable the selected artifact with `--set forecast.model_path=out/firex-real/forecast-model.json` on a subsequent pipeline run. The Predict view shows candidates and the dataset's saved benchmark comparison. With no suitable reviewed history/model, the estimate stays unavailable; access-graph hypotheses still work.
-
 ## Validation
 
 ```powershell

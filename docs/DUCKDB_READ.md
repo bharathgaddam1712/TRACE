@@ -64,8 +64,8 @@ noise automatically. Inspect quality counters before presenting conclusions.
 
 ## Full-file local demo
 
-`scripts/demo.ps1` defaults to the complete local `firex-10G.log` and
-`out/firex-full-demo`. It does not create another raw-data sample. The optional
-temporal ML comparison uses an explicit bounded interaction subset; its report
-states that bound. Neo4j remains optional; local adjacency indexes handle graph
-queries. See [demo instructions](DEMO.md).
+`scripts/demo.ps1` defaults to the complete local `firex-10G.log` and an output
+folder under `%LOCALAPPDATA%\TRACE`. It does not create another raw-data sample.
+Neo4j remains optional; local adjacency indexes handle graph queries. Next-asset
+hypotheses and time-ordered paths use recorded access evidence.
+See [demo instructions](DEMO.md).

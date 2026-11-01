@@ -13,3 +13,5 @@ attack/*.json
 !.env.example
 *.sqlite3*
 .pytest_cache/
+# Local conversation handoff; not product documentation.
+memory.md

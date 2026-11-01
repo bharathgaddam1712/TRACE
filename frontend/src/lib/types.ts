@@ -25,13 +25,6 @@ export interface Reachable {
   interpretation?: string; evidence?: { event_ids?: string[]; sample_event_id?: string };
 }
 
-export interface ForecastSequence { techniques: string[]; model_path_score: number }
-export interface Forecast {
-  status: string; reason?: string | null; method?: string; training_until?: string;
-  candidates?: { technique: string; count?: number; historical_share?: number }[]; sequences?: ForecastSequence[];
-  interpretation?: string; evaluation_warnings?: string[];
-}
-
 export type CaseStatus = 'new' | 'investigating' | 'contained' | 'closed';
 export interface CaseInfo { status: CaseStatus; version: number; history: { ts: string; status: string; note: string }[] }
 
@@ -39,7 +32,7 @@ export interface Incident extends IncidentRow {
   score_interpretation?: string; kill_chain_progression?: number;
   raw_event_count?: number; host_path?: string[]; timeline: TimelineStep[]; graph: Graph; narrative: string;
   lookahead: { status: string; reachable: Reachable[]; assumptions?: string[]; total_candidates?: number };
-  forecast?: Forecast; correlation_links?: Record<string, unknown>[]; case: CaseInfo;
+  correlation_links?: Record<string, unknown>[]; case: CaseInfo;
   related_incidents?: { source: number; target: number; score: number; [k: string]: unknown }[];
 }
 

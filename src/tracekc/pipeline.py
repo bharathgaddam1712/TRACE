@@ -79,7 +79,7 @@ def _hash_dir(path: Path, pattern: str) -> str:
     return h.hexdigest()[:16]
 
 
-def run_pipeline(cfg: dict, input_dir: Path, out_dir: Path, keep_work: bool = False, on_ingested=None) -> dict:
+def run_pipeline(cfg: dict, input_dir: Path, out_dir: Path, keep_work: bool = False) -> dict:
     input_dir, out_dir = input_dir.resolve(), out_dir.resolve()
     if input_dir.is_dir() and out_dir.is_relative_to(input_dir):
         raise ValueError('Output must be outside the input directory to avoid ingesting generated files')
@@ -92,12 +92,12 @@ def run_pipeline(cfg: dict, input_dir: Path, out_dir: Path, keep_work: bool = Fa
     try:
         with os.fdopen(descriptor, 'w') as stream:
             stream.write(str(os.getpid()))
-        return _run_pipeline(cfg, input_dir, out_dir, keep_work, on_ingested)
+        return _run_pipeline(cfg, input_dir, out_dir, keep_work)
     finally:
         lock.unlink(missing_ok=True)
 
 
-def _run_pipeline(cfg: dict, input_dir: Path, out_dir: Path, keep_work: bool = False, on_ingested=None) -> dict:
+def _run_pipeline(cfg: dict, input_dir: Path, out_dir: Path, keep_work: bool = False) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     work = out_dir / "work"
     if work.exists():
@@ -139,6 +139,8 @@ def _run_pipeline(cfg: dict, input_dir: Path, out_dir: Path, keep_work: bool = F
             run(con,f'SET threads={previous_threads}')
             run(con,f'SET memory_limit={lit(previous_memory)}')
     try:
+        # Stages 1–3 keep large scans and rule evaluation inside DuckDB. Only
+        # normalized records are cached; failed input remains separately auditable.
         with stage("ingest"):
             scan_threads=int(one(con,"SELECT current_setting('threads')")[0])
             read_threads=min(scan_threads,int(cfg['ingest'].get('threads',4)))
@@ -152,7 +154,6 @@ def _run_pipeline(cfg: dict, input_dir: Path, out_dir: Path, keep_work: bool = F
                 run(con,f'SET threads={scan_threads}')
             quality=report['ingest']
             report['input_quality']='partially_quarantined' if any(quality.get(key,0) for key in ('quarantined_rows','adapter_rejected_records','reader_rejected_records')) else 'valid_for_supported_schema'
-        if on_ingested is not None:on_ingested(work/'events.parquet')
         rules_dir = project_path(cfg, cfg["detection"]["rules_dir"])
         rules, errors = load_rules(rules_dir)
         for e in errors:
@@ -171,12 +172,16 @@ def _run_pipeline(cfg: dict, input_dir: Path, out_dir: Path, keep_work: bool = F
         sup_path = project_path(cfg, "configs/suppressions.yaml")
         suppressions = (yaml.safe_load(sup_path.read_text(encoding="utf-8-sig")) or {}).get("suppressions") or [] if sup_path.exists() else []
         with stage("correlate"), blocking_budget():
+            # Stage 4 assigns signals before publication so every incident graph
+            # and isolated finding can point back to the same evidence membership.
             report["signals"] = build_signals(con, cfg, suppressions)
             edges = link_edges(con, cfg)
             promoted, isolated = assemble(con, cfg, edges)
             record_assignment(con, promoted, isolated, work)
             report["correlate"] = {"edges": len(edges)}
         with stage("materialize"), blocking_budget():
+            # Stages 5–6 build evidence graphs and observed-access lookahead.
+            # Stage 7 serves these artifacts; it does not repeat the analytics.
             graph = AccessGraph(con, cfg)
             report["output"] = materialize(con, cfg, out_dir, promoted, isolated, graph, edges)
     finally:

@@ -1,6 +1,11 @@
 import type { NextConfig } from 'next';
+import path from 'node:path';
 
 const config: NextConfig = {
+  // Trace runtime dependencies for the small production Docker image.
+  output: 'standalone',
+  outputFileTracingRoot: path.resolve(__dirname),
+  turbopack: { root: path.resolve(__dirname) },
   reactStrictMode: true,
   poweredByHeader: false,
   async headers() {

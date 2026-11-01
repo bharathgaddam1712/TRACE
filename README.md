@@ -1,159 +1,251 @@
-# TRACE: evidence-backed attack investigation
+# TRACE
 
-The local UI is the Next.js console at http://127.0.0.1:3000. Build results with
-`scripts/demo.ps1`, build the frontend with `cd frontend; npm ci; npm run build`,
-then return to the repository root and run:
+**Turn security logs into evidence-backed incidents, attack paths and reachable assets.**
 
-```powershell
-.\.venv\Scripts\python.exe scripts/start_web.py
+TRACE is a local investigation tool built with Python, DuckDB, FastAPI and Next.js. It reads supported logs, detects suspicious activity, maps findings to MITRE ATT&CK, connects related evidence and shows where a compromised account or host could reach next.
+
+The core pipeline works without an API key, Neo4j or model training. Optional Sarvam assistance adds analyst explanations and triage. A reachable asset is a hypothesis supported by observed access, not a confirmed compromise.
+
+[Start the demo](#quick-start-for-judges) · [Architecture](#architecture) · [Your own logs](#process-your-own-logs) · [Configuration](#configuration) · [Development](docs/DEVELOPMENT.md) · [Dependencies](docs/DEPENDENCIES.md)
+
+## Quick start for judges
+
+The repository includes **10,000 sample EDR events** in `data/sample/edr_events.json`. No private log download or external account is needed. Clone the repository normally; the sample does not require Git LFS. Large historical benchmark files are optional.
+
+### Option A — Docker Compose
+
+Install [Docker Desktop](https://docs.docker.com/desktop/) with Linux containers, or Docker Engine with the Compose plugin. Start the Docker engine, then run:
+
+```bash
+git clone https://github.com/bharathgaddam1712/TRACE.git
+cd TRACE
+docker compose up --build
 ```
 
-The launcher starts the API and console together. SOC triage is available in an
-incident's **Respond** tab. See [triage architecture](docs/TRIAGE.md).
+Open **http://localhost:3000** after the sample pipeline finishes and the web service starts. API documentation is at **http://localhost:8000/docs**.
 
-For a previously unseen jury log, use the [fresh-file demo workflow](docs/NEW_LOG_DEMO.md).
+Compose builds both applications, runs the sample pipeline, waits for successful completion, then starts the API and Next.js console. Initial image/dependency downloads require internet access; the installed core pipeline then works offline. Pipeline exit code `0` is expected: it is a one-shot job.
 
-For the full-file local demo, bounded attacker-technique sequences,
-and causal temporal ML experiments, see [demo commands](docs/DEMO.md) and
-[research / evaluation design](docs/TEMPORAL_RESEARCH.md). The large demo input is
-stored with Git LFS as an optional earlier benchmark; the default demo uses the
-complete local log. Temporal interaction scores are not attack-prediction accuracy.
-
-TRACE reads security logs, detects suspicious behavior, maps it to MITRE ATT&CK, links related signals into incidents, builds an evidence graph, estimates possible next access, and serves an investigation UI.
-
-The detection pipeline works offline. Optional Sarvam analysis adds explanations, investigation chat, mapping suggestions, compiler-validated Sigma drafts, and multilingual reports. AI suggestions never silently change detections, enable rules, dismiss incidents or perform containment.
-
-## Quick start on Windows
-
-Python 3.10+ is required. Run from the repository root:
-
-```powershell
-.\scripts\setup.ps1
-.\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe scripts\validate_loop.py
-.\.venv\Scripts\python.exe scripts/start_web.py --out out/sample-loop/planted
+```bash
+docker compose ps -a                 # pipeline should exit 0; api/web should be healthy
+docker compose logs pipeline         # processing progress and timings
+docker compose down                  # stop services; keep saved results
 ```
 
-Build the Next.js frontend first (`cd frontend; npm ci; npm run build`), return to
-the repository root, then use the launcher above and open http://127.0.0.1:3000. The sample loop exercises the shipped sample, a time-spread replay with a planted six-step attack, scoring, API, and cited evidence. It does not spend Sarvam credits.
+Results, analyst notes and ingestion caches persist in the `trace_results` named volume; spill uses `trace_spill`. `docker compose down --volumes` deletes those volumes: use it only when intentionally resetting the demo. Docker results are separate from a native `out/demo` run.
 
-Linux/macOS:
+> Validation: the native workflow and production build are tested. Compose configuration is validated; its container smoke job is defined in [GitHub Actions](https://github.com/bharathgaddam1712/TRACE/actions). Check the run for your commit before relying on container validation.
+
+### Option B — run locally
+
+Prerequisites: **Python 3.11+**, **Node.js 22 LTS** and npm. Python 3.12 is the CI/container baseline. Node must meet the [Next.js requirements](https://nextjs.org/docs/app/getting-started/installation). Use an SSD and leave room for input, normalized data, caches and spill. GCC or Clang enables the optional native FortiGate lexer; it is not required for the sample.
+
+**Windows PowerShell**, from the repository root:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -e ".[dev]"
+
+Push-Location frontend
+npm ci
+npm run build
+Pop-Location
+
+.venv\Scripts\python.exe -m tracekc run --input data/sample --out out/demo
+.venv\Scripts\python.exe scripts/start_web.py --out out/demo --port 3000 --api-port 8000
+```
+
+**Linux / macOS**, from the repository root:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt
-.venv/bin/pip install --no-deps -e .
-cp .env.example .env
-.venv/bin/python scripts/validate_loop.py
-.venv/bin/python scripts/start_web.py --out out/sample-loop/planted
+.venv/bin/python -m pip install -e '.[dev]'
+
+(cd frontend && npm ci && npm run build)
+
+.venv/bin/python -m tracekc run --input data/sample --out out/demo
+.venv/bin/python scripts/start_web.py --out out/demo --port 3000 --api-port 8000
 ```
 
-## Web console (Next.js)
+Open **http://localhost:3000**. The launcher starts both servers; it requires free ports and completed results. Server logs and process IDs are recorded under `out/demo/ui-logs/` and `out/demo/ui_processes.json`.
 
-A web investigation console lives in `frontend/` (Node.js 20+). It reads the results of a pipeline run
-through the API, so start the API first, then the console:
+For an interactive development session, run the API in one terminal and the frontend in another; see [development commands](docs/DEVELOPMENT.md). Python packages are pinned in `pyproject.toml`; `npm ci` uses the committed frontend lockfile.
 
-```bash
-# 1. Results: the data ships in the repo (data/sample/edr_events.json, 10,000 EDR events)
-.venv/bin/tracekc run --input data/sample --out out/web       # or: scripts/validate_loop.py -> out/sample-loop/planted
-# 2. API on :8000
-.venv/bin/tracekc serve --out out/web
-# 3. Console on :3000 (second terminal)
-make web
+## What to demonstrate
+
+1. **Overview / Data:** inspect input quality, source bytes, stage timings and run progress.
+2. **Incidents:** select an incident and review its timeline, ATT&CK labels and source evidence.
+3. **Attack graph:** click nodes/edges and use the path finder. **Time-ordered** requires observation times to follow a valid sequence.
+4. **Where next:** inspect reachable assets and the access evidence supporting each candidate.
+5. **Respond:** add analyst notes or case status; optionally request advisory Sarvam triage.
+
+Sample example: in incident 1, open the graph and select **User: vreddy → Host: WS-HR-013** in the Time-ordered path finder. Findings depend on the input; an empty reachable list is valid when supported access is absent.
+
+## Architecture
+
+```mermaid
+flowchart TB
+    Input["Security logs\nECS JSON / NDJSON / CSV / FortiGate / timestamped syslog"]
+    Read["1. READ\nChunk, validate, normalize and deduplicate"]
+    Detect["2. DETECT\nSigma rules, correlations, builtin behavior and vendor alerts"]
+    Map["3. MAP\nMITRE ATT&CK labels and provenance"]
+    Link["4. LINK\nEntity + time + process evidence; incident assembly"]
+    Graph["5. GRAPH\nTyped evidence edges and time-ordered paths"]
+    Reach["6. WHERE NEXT\nBounded traversal of observed access before incident cutoff"]
+    API["FastAPI\nRead results, retrieve evidence, persist analyst actions"]
+    UI["7. SHOW\nNext.js investigation console"]
+    Store[("DuckDB + Parquet\nNormalized events, signals and evidence")]
+    Reject[("Quarantine + checkpoints\nRejected-byte accountability and recovery")]
+    Results[("Incident JSON + SQLite\nPublished graphs, cases and AI audit")]
+    AI["Optional Sarvam\nAdvisory explanation and triage"]
+    Input --> Read --> Detect --> Map --> Link --> Graph --> Reach --> API --> UI
+    Read --> Store
+    Store -. "SQL analytics / evidence lookup" .-> Detect
+    Read --> Reject
+    Reach --> Results --> API
+    API <--> AI
 ```
 
-Windows (PowerShell): the same steps with `.\.venv\Scripts\python.exe -m tracekc run --input data/sample --out out/web`,
-`.\.venv\Scripts\python.exe -m tracekc serve --out out/web`, then `cd frontend; npm ci; npm run build; npm run start`.
-To analyse other logs, point `--input` at a folder of your own files. See [frontend/README.md](frontend/README.md).
+DuckDB handles analytical SQL locally; a separate database server is not needed. Parquet preserves the larger evidence sets, while published incident JSON serves interactive investigation. SQLite stores analyst state and AI audit/cache data. Neo4j is an optional graph mirror, not a default requirement or a guaranteed processing speedup.
 
-## Where to put the Sarvam API key
+### The seven stages
 
-Create **`.env` in this repository root**, beside `pyproject.toml`. Setup creates a blank template automatically. Edit:
-
-```dotenv
-SARVAM_API_KEY=your_real_key_here
-SARVAM_MODEL=glm5.3
-SARVAM_REASONING_EFFORT=high
-SARVAM_MAX_TOKENS=8192
-SARVAM_DAILY_REQUEST_LIMIT=50
-SARVAM_DAILY_TOKEN_LIMIT=500000
-```
-
-Restart the API, open an incident, select **Assistant**, choose a task and click **Ask Sarvam**. The key is loaded on the server; do not put it in JavaScript, YAML, a URL, chat, or a Git commit. `.env` is Git-ignored and excluded from Docker build context. Existing environment variables take precedence over `.env`.
-
-Default model: **`glm5.3`**, Sarvam's strongest generally available reasoning choice in its catalog as checked on 2026-10-31. This is a provider recommendation, not a TRACE security benchmark. Set `SARVAM_MODEL=sarvam-105b` for Sarvam's own multilingual model, or `glm5.3-flash` for lower cost. Beta models require separate access; TRACE does not assume it. See [Sarvam's current model catalog](https://docs.sarvam.ai/api/token-factory/models) and [Chat Completion V2](https://docs.sarvam.ai/api-reference/chat/chat-completions-v2).
-
-Without a key, detection, graphs, prediction, reports and analyst notes still work; the Assistant explains how to enable AI. See [operations and AI behavior](docs/OPERATIONS.md).
-
-## The seven stages
-
-| Stage | Implementation | Current behavior |
+| Stage | What happens | Main code |
 |---|---|---|
-| Read | `ingest.py`, `adapters.py` | DuckDB, explicit ECS schema, compressed Parquet, native FortiGate `.log`, ECS/NDJSON/gzip, CSV and timestamped syslog; normalization, deduplication, quality metrics and quarantine; unchanged-file and resumable chunk caches |
-| Detect | `sigma.py`, `detect.py`, `rules/` | 48 TRACE rules (17 for Active Directory) + 1,175 compatible SigmaHQ rules, vendor alerts, lateral logons, host/fleet volume baselines, rare process lineage; suppressions and recurrence controls |
-| Map | `label.py`, `configs/attack_mapping.yaml` | ATT&CK v20 mapping, parent fallback, tactic validation, multiple technique IDs retained; official STIX verification |
-| Link | `correlate.py` | Account/host/IP/time pivots, stable process entities and lateral-logon edges, hub guards, over-merge guards, actual link provenance |
-| Graph | `materialize.py` | Hosts, users, IPs, processes, events, domains, files and registry entities; event IDs on edges; server-side entity/time filters |
-| Predict | `reach.py`, `forecast.py` | Access evidence restricted to incident time, evidence/session expiry, next-target hypotheses; optional historical next-technique baseline with chronological holdout |
-| Show | FastAPI, `web/` | Search/filter, timeline, clickable evidence graph, next-target view, analyst status/notes/history, reports, findings and optional Sarvam assistant |
+| **1. Read** | Validate supported schemas; normalize entities/timestamps; deduplicate; cache chunks and record rejected input. | `ingest.py`, `adapters.py`, `fortigate.py`, `native_reader.py`, `read_cache.py` |
+| **2. Detect** | Scope compatible Sigma rules; evaluate bounded SQL batches, correlation rules, behavior baselines and vendor alerts. | `sigma.py`, `detect.py`, `rules/` |
+| **3. Map** | Apply ATT&CK technique/tactic mapping, keep provenance and handle parent-technique fallback. | `label.py`, `configs/attack_mapping.yaml` |
+| **4. Link** | Assemble signals using observed entities and time; score related incidents by techniques, entities and time with explanations. | `correlate.py`, `relationships.py` |
+| **5. Graph** | Build evidence-backed typed edges; retrieve bounded paths, including paths constrained by observation order. | `materialize.py`, `graph_algorithms.py` |
+| **6. Where next** | Traverse observed access available before the incident ended to return possible reachable assets and supporting paths. | `reach.py` |
+| **7. Show** | Present incidents, graph, evidence, findings, case actions and optional AI assistance. | `api.py`, `triage.py`, `frontend/` |
+
+Stage 6 is **next-asset reachability**. TRACE does not currently train or serve a next-technique prediction model. ATT&CK coverage is limited by supported rules and available telemetry; it is not a claim to detect every attack.
 
 ## Process your own logs
 
+### Native run
+
+Replace the example path with a complete local file or a directory of supported files. Keep output outside the input directory.
+
 ```powershell
-.\.venv\Scripts\python.exe -m tracekc run --input "C:\Users\bhara\Downloads\Firex Logs\firex-10G.log" --out out/firex10 --set engine.memory_limit=5GB
-.\.venv\Scripts\python.exe -m tracekc serve --out out/firex10
+.venv\Scripts\python.exe -m tracekc run --input "C:\logs\security.log" --out out/my-run
+.venv\Scripts\python.exe scripts/demo_smoke.py --out out/my-run
+.venv\Scripts\python.exe scripts/start_web.py --out out/my-run --port 3001 --api-port 8001
 ```
 
-A directory is searched recursively for `.log`, `.json`, `.ndjson`, `.jsonl`, `.csv`, `.syslog` and configured gzip forms. The native reader recognizes FortiGate key=value records and reports malformed/binary spans explicitly. Only complete downloaded files should be processed; `.part` files are not discovered. The extension does not establish the format.
+On Linux/macOS, replace `.venv\Scripts\python.exe` with `.venv/bin/python`. For full-file profiling, use `scripts/run_optimized_demo.py`; see [performance](docs/PERFORMANCE.md) and the [new-log checklist](docs/NEW_LOG_DEMO.md).
 
-CSV accepts dotted ECS column names plus aliases such as `timestamp`, `host`, `user`, `action`, `src_ip`, `dst_ip`, `dst_port`, `bytes`, `process_name` and `command_line`. Array values can be JSON arrays or semicolon-delimited. For detection, map actions to the ECS contract (e.g. `process_created`, `network_connection`, `user_logon`). Syslog requires an explicit ISO8601 timestamp and host; generic syslog messages are preserved but are not automatically parsed into Windows/process/network actions. Legacy yearless RFC3164 is rejected rather than assigned an invented date.
+### Docker run
 
-Domain controller logs in Winlogbeat ECS form (`winlog.event_id`, `winlog.event_data.*`) feed the Active Directory rules in `rules/active_directory.yml`: Kerberoasting, krbtgt weak-encryption (golden ticket), password spraying via 4771/4776/4625, DCSync and replication-rights grants, DCShadow, Tier-0 and privileged group additions, AdminSDHolder, SPN and delegation changes, GPO/SYSVOL changes and sensitive or bulk LDAP searches. Enable DC auditing for Kerberos Service Ticket Operations, Kerberos Authentication Service, Credential Validation, Security Group Management, Directory Service Access and Directory Service Changes; LDAP rules also need Directory Service event 1644 (field engineering logging). Records without `event.id` are de-duplicated with `winlog.record_id`. Azure AD Connect `MSOL_*` accounts replicate legitimately and belong in `configs/suppressions.yaml`.
+Mount a directory containing **only the files to analyze**. Stop the previous demo first; use a different Compose project name for a different dataset so its results stay separate.
 
-Malformed ECS JSON fails by default. `--set ingest.ignore_errors=true` permits DuckDB's tolerant reader, with invalid/missing-time/host rows quarantined when represented by the reader. Adapter rejections retain source/line/reason diagnostics. Inspect metrics before trusting a run.
+```powershell
+# Windows PowerShell: use an existing absolute directory with forward slashes.
+$env:TRACE_INPUT_PATH = 'C:/logs/jury-input'
+docker compose -p trace-jury up --build
+```
 
-Unchanged inputs reuse normalized Parquet. Large closed files use resumable chunks; explicitly append-only ECS/FortiGate streams can read only newly completed lines. Changed files outside append-only mode are reprocessed, and detection/correlation still rerun globally. See the assumptions and limits in [operations](docs/OPERATIONS.md). Cache storage persists under the output directory. Use a separate output directory for each dataset; output must not sit inside its input directory.
+```bash
+# Linux/macOS
+TRACE_INPUT_PATH=/absolute/path/to/jury-input docker compose -p trace-jury up --build
+```
 
-## Outputs and investigation API
+`TRACE_INPUT_PATH` replaces the sample mount. Input is read-only. Stop the old project before reusing its host ports, or set `TRACE_WEB_PORT` / `TRACE_API_PORT` to free ports. Do not run different pipelines against the same output volume concurrently.
 
-| Output | Purpose |
+### Supported input and quality
+
+- ECS JSON, NDJSON/JSONL and supported gzip forms.
+- CSV with the documented field aliases; native FortiGate `key=value` logs.
+- Timestamped syslog with an explicit date/time and host. Arbitrary free text is not automatically converted into security events.
+- Winlogbeat ECS fields feed the Active Directory rules when the required auditing data exists.
+
+File extensions do not establish the schema. Malformed ECS JSON fails by default; FortiGate/adapter rejections have explicit diagnostics. Preserve the source and inspect quarantine/input-quality metrics. See the [data contract](docs/data_contract.md) and [reader details](docs/DUCKDB_READ.md).
+
+## Configuration
+
+Runtime settings live in `configs/config.yaml`. Override individual values without editing the file:
+
+```bash
+tracekc run --input data/sample --out out/tuned --set engine.threads=4 --set engine.memory_limit=1536MB
+```
+
+The default limits DuckDB buffers to 1536 MB and uses conservative concurrency. **Buffer memory is not total process RAM.** Larger thread counts or memory limits can increase paging, spill or intermediate data; measure before changing them. Large-file runtime depends on source format, valid event volume, storage and hardware. A new 30 GB run and an under-ten-minute result are not yet verified.
+
+### Optional Sarvam assistance
+
+The sample demo needs no `.env` file. To enable AI, copy `.env.example` to **`.env` in the repository root** and set:
+
+```dotenv
+SARVAM_API_KEY=replace_with_your_key
+SARVAM_MODEL=glm5.3
+```
+
+`SARVAM_MODEL` is configurable; confirm access in your [provider model catalog](https://docs.sarvam.ai/api/token-factory/models). Request/token budgets and timeout settings are documented in `.env.example`. Restart the native servers after editing it; for Compose use `docker compose up -d --force-recreate api web` after the pipeline is complete.
+
+Keys stay server-side. Do not add them to frontend source, `NEXT_PUBLIC_*` variables, screenshots or commits. Compose passes only the specified environment variables; it does not bake `.env` into an image. The Node proxy forwards `TRACE_API_TOKEN` to the API without exposing it to browser code.
+
+AI output is advisory: it does not silently change detections, dismiss incidents, enable rules or contain assets. Without a key, deterministic processing and investigation still work.
+
+## Repository layout
+
+```text
+TRACE/
+├── src/tracekc/           # Python pipeline, API, reachability and triage
+│   └── native/           # Optional C FortiGate tokenizer
+├── frontend/             # Primary Next.js / React investigation UI
+├── configs/              # Runtime, ATT&CK mapping and suppressions
+├── rules/                # TRACE rules and attributed compatible SigmaHQ rules
+├── data/sample/          # Small, bundled demo input
+├── data/benchmarks/      # Optional historical data and measurements
+├── scripts/              # Setup, demo, validation and benchmarking tools
+├── tests/                # Unit, API and end-to-end regression tests
+├── docs/                 # Architecture, operations, evaluation and demo guides
+├── attack/               # ATT&CK bundle download/verification instructions
+├── web/                  # Legacy static API view and vendored Cytoscape notice
+├── Dockerfile            # Python image, including optional lexer compiler
+├── frontend/Dockerfile   # Multistage Next.js production image
+└── docker-compose.yml    # Sample pipeline → healthy API → web console
+```
+
+Generated results belong under ignored `out/`; local raw logs under ignored `data/raw/`. Never commit private logs, `.env`, caches or analyst databases. The Next.js console is the primary UI; `web/` remains a legacy API fallback.
+
+## Validation and evaluation
+
+```bash
+# From an installed environment; Windows uses .venv\Scripts\python.exe.
+.venv/bin/python -m pytest -q
+(cd frontend && npm ci && npm run typecheck && npm run build)
+.venv/bin/python scripts/demo_smoke.py --out out/demo
+
+# Controlled sample-label evaluation; these are simulated labels.
+.venv/bin/python -m tracekc eval --out out/demo --gt-from-labels data/sample/edr_events.json --save out/demo/eval.json
+
+# Sample + planted multi-step attack loop, without AI calls.
+.venv/bin/python scripts/validate_loop.py
+```
+
+For real reviewed labels, use `tracekc eval --out OUT --gt ground_truth.json --save OUT/eval.json`. The evaluator distinguishes findings retained anywhere from those promoted into incidents. Sample/planted results do not establish real-file precision or recall. [Accuracy audit](docs/ACCURACY_AUDIT.md) · [Optimization decisions](docs/OPTIMIZATION_REVIEW.md).
+
+## Troubleshooting
+
+| Symptom | What to check |
 |---|---|
-| `index.json`, `incidents/<id>.json` | Ranked incidents, timeline, evidence graph, correlation links, lookahead, forecast, report and stable fingerprint |
-| `evidence.parquet` | Normalized events referenced by signals/access hypotheses for drill-down |
-| `signals.parquet`, `step_index.parquet` | Full signal/incident audit trail |
-| `findings.json`, `suppressed.json` | Isolated signals and audited suppressions |
-| `quarantine.parquet`, `ingest_manifest.json`, `ingest_cache/` | Data quality, source manifest and reusable ingestion cache |
-| `progress.json`, `run_metrics.json` | Current stage, errors, timings, memory and counts |
-| `analyst.sqlite3` | Local analyst history, AI cache, usage reservations and AI audit hashes |
+| Docker cannot connect to its daemon | Start Docker Desktop / Docker Engine and run `docker info`. |
+| Console is not ready yet | Wait for sample processing and image builds; inspect `docker compose logs pipeline api web`. |
+| Port already in use | Stop your earlier demo or choose unused ports. For Compose set `TRACE_WEB_PORT` and `TRACE_API_PORT`; for native use launcher flags. |
+| API unreachable / HTTP 502 | Confirm the API is running and its output path matches the intended run. Native frontend defaults to `http://127.0.0.1:8000`. |
+| No completed results | Run the pipeline first; inspect `progress.json` and processing logs for failures. |
+| No reachable assets | Check whether the logs contain supported account/host access evidence before the incident cutoff. Empty results can be correct. |
+| Memory or disk pressure | Reduce concurrency, inspect free disk/RAM and use SSD spill. Do not assume raising DuckDB's limit improves latency. |
+| Assistant unavailable | Configure a valid server-side key/model and review provider access and local usage budgets. |
 
-Endpoints: `GET /health`, `/progress`, `/metrics`, `/findings`, `/incidents?q=&min_score=&status=&tactic=&limit=&offset=`, `/incidents/{id}`, `/incidents/{id}/path`, `/incidents/{id}/graph?entity=&start=&end=`, `/incidents/{id}/evidence/{event_id}`, `/incidents/{id}/report`, `/ai/status`. Writes: `POST /incidents/{id}/case` and `/incidents/{id}/ai`. Schemas are at `/docs`.
+## Documentation and attribution
 
-The server binds to localhost by default. When explicitly sharing it, configure `TRACE_API_TOKEN` and use the UI's API connection field. Analyst notes use optimistic version checks and persist by incident fingerprint. This is a local single-team investigation tool, not a multi-tenant SOC platform.
+- [Development and contribution guide](docs/DEVELOPMENT.md)
+- [Packages, licenses and upstream sources](docs/DEPENDENCIES.md)
+- [Jury runbook](docs/JURY_RUNBOOK.md) · [Demo guide](docs/DEMO.md)
+- [Operations](docs/OPERATIONS.md) · [Performance and measurement limits](docs/PERFORMANCE.md)
+- [Triage architecture](docs/TRIAGE.md) · [Incremental live-mode design — not implemented](docs/LIVE_MODE.md)
 
-## Prediction and evaluation
-
-A reachable asset is **not confirmed compromised**. Access confidence is evidence strength; incident scores are priority heuristics, not probabilities. Observed shared entities do not prove causation. The graph and report preserve these distinctions.
-
-Next-technique forecasting is disabled until you supply dated historical incident sequences. No model is trained on the sample and represented as production-ready. `tracekc train-forecast` produces an auditable transition baseline with a strict time split, held-out coverage/accuracy, source hash, and a training cutoff checked against each incident. See [operations](docs/OPERATIONS.md#historical-next-technique-model).
-
-```bash
-tracekc rules-check
-python scripts/fetch_attack.py --version 20.0
-tracekc attack-verify --stix attack/enterprise-attack-20.0.json
-tracekc eval --out out/firex10 --gt path/to/ground_truth.json --save out/firex10/eval.json
-```
-
-Small sample and synthetic replay results do not establish accuracy or performance on the 6–30 GB Firex tiers. Measure the full input's memory, timings, false positives and ground-truth scores separately. Whole-process RSS can exceed DuckDB's buffer cap because Python graphs and signals also use memory.
-
-## Docker
-
-```bash
-docker compose run --rm pipeline
-docker compose up api
-```
-
-Place logs in `data/raw/`. For optional AI, pass `SARVAM_API_KEY` and other variables through your deployment environment (Compose forwards them); `.env` is never baked into the image. The Compose API uses an explicitly configured container bind address.
-
-## References and licenses
-
-The implementation retains TRACE's focused DuckDB pipeline. CERT-Shield informed the idea of structured/bilingual reporting; Vigil informed investigation/case UX. No code was copied from either project. Cytoscape.js is vendored for offline use with its MIT license in `web/vendor/CYTOSCAPE-LICENSE.txt`. Project rules retain their authors; preserve author/license attribution when adding third-party Sigma rules.
+Dependencies retain their upstream licenses. SigmaHQ content carries its own [Detection Rule License](rules/community/LICENSE); vendored Cytoscape retains its [MIT notice](web/vendor/CYTOSCAPE-LICENSE.txt). No top-level license for TRACE's own code has been declared in this repository; dependency licenses do not grant rights to the whole project. See the dependency guide before redistributing third-party content.

@@ -189,27 +189,6 @@ def test_graph_accumulation_retains_each_observation_and_full_time_extent():
     assert not any(key.startswith('_') for e in graph['edges'] for key in e)
 
 
-@pytest.mark.parametrize('legacy',[True,False])
-def test_forecast_attachment_preserves_current_graph_and_upgrades_legacy_times(tmp_path,legacy):
-    from tracekc.forecast import attach_model, timestamp
-    start='2026-10-31T00:00:00Z';end='2026-10-31T00:00:01Z'
-    times=[int(timestamp(t).timestamp()*1000) for t in (start,end)]
-    graph={'nodes':[{'id':'a'},{'id':'b'}],'edges':[{'source':'a','target':'b','kind':'observed_on','steps':[1]}]}
-    if not legacy:
-        graph['observation_schema_version']=2;graph['edges'][0]['observation_times_ms']=times
-    incident={'id':1,'first_seen':start,'timeline':[{'step':1,'ts':start,'ts_last':end,'technique':'T1110'}],'graph':graph}
-    folder=tmp_path/'incidents';folder.mkdir()
-    (folder/'1.json').write_text(json.dumps(incident),encoding='utf-8')
-    (tmp_path/'index.json').write_text('[{"id":1}]',encoding='utf-8')
-    model={'method':'historical_first_order_transition_baseline','selected_model':'markov1',
-           'training_until':'2026-10-30T00:00:00Z','transitions':{'T1110':{'T1071':3}}}
-    path=tmp_path/'model.json';path.write_text(json.dumps(model),encoding='utf-8')
-    result=attach_model(tmp_path,path)
-    saved=json.loads((folder/'1.json').read_text(encoding='utf-8'))
-    assert result['estimated']==1 and result['raw_reprocessing'] is False
-    assert saved['graph']['edges'][0]['observation_times_ms']==times
-    assert saved['graph']['observation_schema_version']==2
-    assert saved['forecast']['candidates'][0]['technique']=='T1071'
 
 
 def test_demo_awake_request_restores_previous_state_after_failure():
@@ -224,25 +203,6 @@ def test_demo_awake_request_restores_previous_state_after_failure():
     assert calls==[0x80000003,0x80000000]
 
 
-def test_forecast_sidecar_uses_published_history_without_rewriting_graphs(tmp_path,monkeypatch):
-    import hashlib
-    from tracekc.forecast import attach_model, export_history
-    from tracekc.api import Store
-    from tracekc.materialize import write_json
-    index=[{'id':1,'fingerprint':'one','first_seen':'2026-10-31T00:00:00Z'}]
-    incident={**index[0],'timeline':[{'technique':'T1110','step':1}], 'graph':{'nodes':[],'edges':[]}}
-    folder=tmp_path/'incidents';folder.mkdir();write_json(folder/'1.json',incident);before=(folder/'1.json').read_bytes()
-    write_json(tmp_path/'index.json',index)
-    payload={'label_source':'analyst_reviewed','incidents':[{'id':'one','started_at':index[0]['first_seen'],
-        'ended_at':index[0]['first_seen'],'techniques':['T1110']}]}
-    write_json(tmp_path/'sequence_history.json',{'index_sha256':hashlib.sha256((tmp_path/'index.json').read_bytes()).hexdigest(),'history':payload})
-    assert export_history(tmp_path,use_cache=True)==payload
-    model={'method':'historical_first_order_transition_baseline','selected_model':'markov1',
-           'training_until':'2026-10-30T00:00:00Z','transitions':{'T1110':{'T1071':3}}}
-    path=tmp_path/'model.json';write_json(path,model)
-    result=attach_model(tmp_path,path,sidecar=True)
-    assert result['estimated']==1 and (folder/'1.json').read_bytes()==before
-    assert Store(tmp_path).incident(1)['forecast']['candidates'][0]['technique']=='T1071'
 
 
 def test_native_prefetch_reuses_one_result_and_cleans_unconsumed_files(tmp_path,monkeypatch):
@@ -287,30 +247,6 @@ def test_graph_publication_normalizes_edges_without_search_index():
     assert not publication.adjacency
 
 
-def test_forecast_model_summary_download_and_eligible_incident(tmp_path,monkeypatch):
-    import hashlib
-    from fastapi.testclient import TestClient
-    from tracekc.api import create_app
-    from tracekc.materialize import write_json
-    monkeypatch.setenv('TRACE_API_TOKEN','');monkeypatch.setenv('TRACE_GRAPH_BACKEND','local')
-    row={'id':7,'fingerprint':'case-seven'};folder=tmp_path/'incidents';folder.mkdir()
-    write_json(folder/'7.json',row);write_json(tmp_path/'index.json',[row])
-    model={'method':'historical_transition_model_comparison','selected_model':'markov1',
-           'training_until':'2026-10-30T00:00:00Z','training_incidents':10,'label_source':'trace_predictions_unreviewed',
-           'benchmark':{'warnings':['Review labels'],'test':{'markov1':{'transitions':3,'top1':0.5}}}}
-    with TestClient(create_app(tmp_path)) as client:
-        assert client.get('/forecast/model').json()['status']=='unavailable'
-        assert client.get('/forecast/model/download').status_code==404
-    write_json(tmp_path/'forecast-model.json',model)
-    write_json(tmp_path/'forecasts.json',{'index_sha256':hashlib.sha256((tmp_path/'index.json').read_bytes()).hexdigest(),
-        'predictions':{'7':{'fingerprint':'case-seven','forecast':{'status':'estimated'}}}})
-    with TestClient(create_app(tmp_path)) as client:
-        summary=client.get('/forecast/model').json()
-        assert summary['selected_model']=='markov1' and summary['training_incidents']==10
-        assert summary['example_incident_id']==7 and summary['eligible_incidents']==1
-        assert summary['warnings']==['Review labels']
-        response=client.get('/forecast/model/download')
-        assert response.json()==model and 'attachment' in response.headers['content-disposition']
 
 
 def test_demo_timestamp_is_saved_artifact_publication_time(tmp_path,monkeypatch):

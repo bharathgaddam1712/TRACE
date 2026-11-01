@@ -1,6 +1,6 @@
 """Explainable incident relationships using candidate indexing, overlap and time constraints."""
 from collections import defaultdict
-from tracekc.forecast import timestamp
+from tracekc.timeutil import timestamp
 
 
 def jaccard(a,b):

@@ -1,4 +1,4 @@
-# Runtime dependencies, pinned to the versions the test suite passed with (Python 3.14.4, Linux x86_64).
+# Runtime dependencies pinned for reproducibility; DuckDB requires Python >= 3.11.
 duckdb==2.0.0
 PyYAML==6.0.3
 fastapi==0.162.0

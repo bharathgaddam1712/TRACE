@@ -1,4 +1,4 @@
-"""Finish model artifacts once the active full-file pipeline publishes its output."""
+"""Validate artifacts once the active full-file pipeline publishes its output."""
 from pathlib import Path
 import json
 import time
@@ -39,7 +39,4 @@ if 'reader_rejected_bytes' not in metrics['ingest']:
     from tracekc.materialize import write_json
     write_json(metrics_path,metrics)
 
-run('-m','tracekc','export-history','--out',str(root),'--save',str(root/'histories.json'))
-run('-m','tracekc','forecast-benchmark','--input',str(root/'histories.json'),'--out',str(root/'forecast-comparison.json'),'--model-out',str(root/'forecast-model.json'))
-run('-m','tracekc','attach-forecast','--out',str(root),'--model',str(root/'forecast-model.json'))
 run('scripts/demo_smoke.py','--out',str(root))

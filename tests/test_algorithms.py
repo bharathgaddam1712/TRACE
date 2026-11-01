@@ -1,12 +1,9 @@
-"""Algorithm, parser and forecasting leakage regression tests."""
-from datetime import datetime, timezone
+"""Algorithm, parser and time-bound evidence regression tests."""
 import json
-from pathlib import Path
 import pytest
 
 from tracekc.graph_algorithms import GraphIndex, weighted_jaccard
 from tracekc.relationships import related_incidents
-from tracekc.forecast import benchmark,predict
 from test_investigation import read_events,event
 
 
@@ -79,22 +76,6 @@ def test_fortigate_chunked_reader_preserves_network_semantics(tmp_path):
     con.close()
 
 
-def test_chronological_model_selection_never_uses_test_for_training(tmp_path):
-    rows=[]
-    for i in range(1,16):
-        day=f'2026-10-{i:02d}T10:00:00Z'
-        rows.append({'id':str(i),'started_at':day,'ended_at':day,'techniques':['T1110','T1059.001','T1547.001']})
-    path=tmp_path/'history.json';path.write_text(json.dumps({'label_source':'test_fixture','incidents':rows}),encoding='utf-8')
-    report,model,test=benchmark(path,'2026-10-08T00:00:00Z','2026-10-12T00:00:00Z')
-    assert report['counts']=={'train':7,'validation':4,'test':4,'crossing_excluded':0}
-    assert report['test']['markov2']['top1']==1
-    assert predict(model,'T1110','2026-10-10T10:00:00Z')['status']=='unavailable'
-    assert predict(model,'T1110','2026-10-13T10:00:00Z',['T1110'])['status']=='estimated'
-    # Poisoning only test labels cannot change the fitted model or selection.
-    for row in rows[11:]:row['techniques']=['T1486','T1490']
-    path.write_text(json.dumps({'incidents':rows}),encoding='utf-8')
-    altered,new_model,_=benchmark(path,'2026-10-08T00:00:00Z','2026-10-12T00:00:00Z')
-    assert new_model['fitted']==model['fitted'] and altered['selected_on_validation']==report['selected_on_validation']
 
 def test_binary_tail_is_accounted_and_source_is_unchanged(tmp_path):
     first=b'date=2026-10-31 time=10:00:00 eventtime=1793440800000000000 tz="+0530" devname="FW01" type="traffic" subtype="forward" srcip=10.0.0.1 srcintfrole="lan" dstip=203.0.113.5 dstintfrole="wan" action="accept"\n'

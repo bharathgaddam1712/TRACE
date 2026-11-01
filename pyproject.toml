@@ -6,14 +6,13 @@ build-backend = "setuptools.build_meta"
 name = "tracekc"
 version = "0.2.0"
 description = "TRACE: kill chain and attack path reconstruction over large security log sets"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = ["duckdb==2.0.0", "PyYAML==6.0.3", "fastapi==0.162.0", "starlette==1.10.0",
                 "pydantic==2.14.2", "uvicorn==0.54.0", "psutil==7.2.2", "fsspec==2026.9.0"]
 
 [project.optional-dependencies]
 graph = ["neo4j==6.4.1"]
 dev = ["pytest==9.2.0", "httpx==0.28.1"]
-temporal = ["scikit-learn==1.9.1", "numpy==2.5.4"]
 
 [project.scripts]
 tracekc = "tracekc.cli:main"

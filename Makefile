@@ -6,13 +6,13 @@ OUT ?= out
 
 .PHONY: setup test demo run serve web eval bench attack clean
 
-setup:            ## create venv and install (Python >= 3.10)
+setup:            ## create venv and install (Python >= 3.11)
 	$(PY) -m venv $(VENV)
 	$(BIN)/pip install -r requirements-dev.txt
 	$(BIN)/pip install --no-deps -e .
 
-test:             ## unit + end-to-end tests (~5 s)
-	$(BIN)/python -m pytest -q tests/test_sigma.py tests/test_pipeline.py
+test:             ## complete unit and end-to-end suite
+	$(BIN)/python -m pytest -q
 
 demo:             ## sample + planted attack chain -> out/demo, then score it
 	rm -rf data/demo && mkdir -p data/demo

@@ -24,8 +24,6 @@ from pathlib import Path
 from tracekc.correlate import evidence_dict, SIGNAL_COLS
 from tracekc.engine import dicts, iter_dicts, run
 from tracekc.sigma import lit
-from tracekc.config import project_path
-from tracekc.forecast import predict
 from tracekc.graph_algorithms import GraphIndex, signal_similarity, signal_features
 from tracekc.relationships import related_incidents
 
@@ -228,10 +226,7 @@ def materialize(con, cfg: dict, out_dir: Path, promoted, isolated, graph, correl
     n_ids = int(cfg["output"]["evidence_events_in_json"])
     host_ips = {r[0] for r in run(con, "SELECT ip FROM ip_host")}
     index = []
-    histories=[]
     lookahead_events = set()
-    model_path = cfg.get('forecast', {}).get('model_path')
-    forecast_model = json.loads(project_path(cfg, model_path).read_text(encoding='utf-8-sig')) if model_path else None
     edges_by_source = defaultdict(list)
     for edge in correlation_edges:
         edges_by_source[edge[0]].append(edge)
@@ -309,14 +304,8 @@ def materialize(con, cfg: dict, out_dir: Path, promoted, isolated, graph, correl
                 "attribution": sorted({a for s in sigs for a in (s["authors"] or []) if a}),
             }
             inc["techniques"] = [{"id": t, "name": n, "tactic": tac} for t, n, tac in inc["techniques"]]
-            inc['forecast'] = predict(forecast_model, sigs[-1]['technique'], inc['first_seen'], [s['technique'] for s in sigs if s['technique']], cfg.get('forecast',{}))
             inc["graph"] = _graph(sigs, ext_ips, reach, links, evidence_rows)
             inc["narrative"] = _narrative(inc)
-            sequence=[]
-            for step in steps:
-                technique=step.get('technique')
-                if technique and (not sequence or sequence[-1]!=technique):sequence.append(technique)
-            histories.append({'id':inc['fingerprint'],'started_at':inc['first_seen'],'ended_at':inc['last_seen'],'techniques':sequence})
             write_json(inc_dir / f"{inc_id}.json", inc)
             index.append({k: inc[k] for k in ("id", "title", "score", "first_seen", "last_seen", "tactics",
                                               "merged_alert_count", "signal_count", "host_path_text")}
@@ -349,8 +338,5 @@ def materialize(con, cfg: dict, out_dir: Path, promoted, isolated, graph, correl
     profiles=[{**row,'timeline':[{'technique_ids':row['technique_ids']}]} for row in index]
     write_json(out_dir / 'relationships.json', related_incidents(profiles,cfg.get('relationships',{})))
     write_json(out_dir / 'index.json', index)  # publish after all incident files exist
-    write_json(out_dir/'sequence_history.json',{'index_sha256':hashlib.sha256((out_dir/'index.json').read_bytes()).hexdigest(),
-        'history':{'label_source':'trace_predictions_unreviewed','incidents':histories,
-                   'warning':'Review these inferred incidents and labels before using them as independent evaluation ground truth.'}})
     return {"incidents": len(index), "isolated_groups": len(isolated),
             "isolated_signals": sum(len(g[2]) for g in isolated)}

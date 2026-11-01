@@ -1,4 +1,4 @@
-"""Compare pipeline totals and order-independent checksums of every normalized row."""
+"""Compare totals, normalized-row checksums and complete incident payloads."""
 import argparse
 import json
 from pathlib import Path
@@ -37,8 +37,23 @@ def main():
     for root in (reference,candidate):
         incident_sets.append(sorted(row['fingerprint'] for row in json.loads((root/'index.json').read_text(encoding='utf-8'))))
     checks['incident_evidence_fingerprints']=incident_sets[0]==incident_sets[1]
+    # Counts and fingerprints can match while any_value reductions select different
+    # evidence or graph identities. Treat that as a failed quality gate.
+    payloads_equal = True
+    mismatched = []
+    files_a={p.name for p in (reference/'incidents').glob('*.json')}
+    files_b={p.name for p in (candidate/'incidents').glob('*.json')}
+    for name in sorted(files_a | files_b):
+        if name not in files_a or name not in files_b:
+            payloads_equal=False; mismatched.append(name); continue
+        left=json.loads((reference/'incidents'/name).read_text(encoding='utf-8'))
+        right=json.loads((candidate/'incidents'/name).read_text(encoding='utf-8'))
+        if left != right:
+            payloads_equal=False; mismatched.append(name)
+    checks['complete_incident_payloads']=payloads_equal
     result={'all_passed':all(checks.values()),'checks':checks,
             'row_checksum_method':'Count, sum and XOR of DuckDB 64-bit row hashes over all normalized columns; probabilistic multiset comparison.',
+            'mismatched_incident_files':mismatched,
             'reference_seconds':a['timings']['total_wall_seconds'],
             'candidate_seconds':b['timings']['total_wall_seconds']}
     write_json(candidate/'quality_comparison.json',result)

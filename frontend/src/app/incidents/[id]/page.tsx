@@ -8,7 +8,7 @@ import type { AIStatus, Incident } from '@/lib/types';
 import { duration, number, scoreLevel, title, when } from '@/lib/format';
 import { Card, CardHeader, Chip, ErrorBox, LevelBadge, ScoreRing, Skeleton, Tabs } from '@/components/ui';
 import { Narrative, Timeline } from '@/components/incident/Story';
-import { Lookahead, NextTechnique } from '@/components/incident/Predict';
+import { Lookahead } from '@/components/incident/Predict';
 import { AskPanel, CasePanel, Downloads, TriagePanel } from '@/components/incident/Respond';
 import { PathFinder } from '@/components/incident/PathFinder';
 
@@ -68,7 +68,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
         <Tabs value={tab} onChange={setTab} items={[
           { id: 'story', label: 'Story', icon: <BookOpen className="size-4" />, count: inc.timeline.length },
           { id: 'graph', label: 'Attack graph', icon: <Network className="size-4" />, count: inc.graph.nodes.length },
-          { id: 'predict', label: 'Predict', icon: <Radar className="size-4" />, count: inc.lookahead.reachable.length },
+          { id: 'predict', label: 'Where next', icon: <Radar className="size-4" />, count: inc.lookahead.reachable.length },
           { id: 'respond', label: 'Respond', icon: <ShieldAlert className="size-4" /> },
         ]} />
       </div>
@@ -89,7 +89,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
           <Card className="p-4"><GraphExplorer graph={inc.graph} path={path} onPick={pick} /></Card>
         </div>
       )}
-      {tab === 'predict' && <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px] rise"><Lookahead incident={inc} /><NextTechnique incident={inc} /></div>}
+      {tab === 'predict' && <div className="rise"><Lookahead incident={inc} /></div>}
       {tab === 'respond' && (
         <div className="grid gap-5 xl:grid-cols-2 rise">
           <div className="space-y-5"><TriagePanel incident={inc} ai={ai} /><AskPanel incident={inc} ai={ai} /></div>

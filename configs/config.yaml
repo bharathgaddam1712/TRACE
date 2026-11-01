@@ -100,12 +100,6 @@ output:
   graph_memory_limit: "512MB" # release large SQL buffers during streamed Python graph publication
   evidence_events_in_json: 20
 
-forecast:
-  model_path: null            # optional JSON from tracekc train-forecast; no invented training data
-  sequence_depth: 3           # future techniques, hard limit 5
-  top_n: 5
-  beam_width: 20              # bounded search, hard limit 50
-  min_support: 3              # abstain when historical transition support is insufficient
 
 relationships:
   threshold: 0.6

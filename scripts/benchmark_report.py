@@ -13,7 +13,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--baseline',required=True)
     parser.add_argument('--optimized',required=True)
-    parser.add_argument('--temporal',nargs='+',required=True)
     parser.add_argument('--out',default='docs/benchmarks/firex-500mib.json')
     args = parser.parse_args()
     before,after = read(args.baseline),read(args.optimized)
@@ -30,10 +29,8 @@ def main():
               'baseline':compact(before),'optimized':compact(after),
               'detection_counts_equal':before['detect']['detections_by_rule']==after['detect']['detections_by_rule'],
               'events':after['ingest']['events'],'base_rules_evaluated':after['detect']['base_rules_evaluated'],
-              'temporal':[read(path) for path in args.temporal],
               'notes':['Cold ingestion runs are not compared because OS-cache state and background activity differed.',
-                       'Counts alone do not prove detection/correlation accuracy; independent attack ground truth is unavailable.',
-                       'Temporal scores use a capped chronological subset, not all interactions in the 500 MiB file.']}
+                       'Counts alone do not prove detection/correlation accuracy; independent attack ground truth is unavailable.']}
     path = Path(args.out);path.parent.mkdir(parents=True,exist_ok=True)
     path.write_text(json.dumps(result,indent=2),encoding='utf-8')
     print(path)

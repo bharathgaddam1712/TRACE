@@ -1,13 +1,21 @@
 .venv
+.git
+.pytest_cache
+frontend/node_modules
+frontend/.next
+memory.md
 out
 work
 data/raw
 data/tiers
 data/planted
+data/benchmarks
 attack/*.json
 **/__pycache__
 *.zip
 
 .env
 .env.*
+**/.env
+**/.env.*
 *.sqlite3*

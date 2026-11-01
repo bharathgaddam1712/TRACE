@@ -14,7 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from tracekc.ai import AIError, AIRequest, SarvamService, redact
-from tracekc.forecast import timestamp
+from tracekc.timeutil import timestamp
 
 
 class TriageRequest(BaseModel):

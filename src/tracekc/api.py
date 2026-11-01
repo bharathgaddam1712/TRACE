@@ -4,7 +4,6 @@ from __future__ import annotations
 import hmac
 import json
 import os
-import hashlib
 import threading
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -19,7 +18,7 @@ from tracekc.ai import AIError, AIRequest, SarvamService
 from tracekc.cases import Cases, CaseUpdate
 from tracekc.config import PROJECT_ROOT, load_env, load_config
 from tracekc.label import load_mapping
-from tracekc.forecast import timestamp
+from tracekc.timeutil import timestamp
 from tracekc.graph_algorithms import GraphIndex
 from tracekc.triage import TriagePipeline,TriageRequest,TriageReview
 
@@ -36,7 +35,6 @@ class Store:
         self.findings = {}
         self.metrics = {}
         self.relationships = {}
-        self.forecasts = {}
         self.graph_indexes = OrderedDict()
         self.refresh()
 
@@ -57,15 +55,12 @@ class Store:
                 findings = self._read('findings.json', {})
                 metrics = self._read('run_metrics.json', {})
                 relationships = self._read('relationships.json', {'links':[]})
-                forecasts=self._read('forecasts.json',{})
-                if forecasts.get('index_sha256')!=hashlib.sha256(index.read_bytes()).hexdigest():forecasts={}
             except (OSError, ValueError):
                 return  # retain the last complete snapshot while a writer publishes
             self.index, self.incidents = rows, OrderedDict()
             self.by_id = {int(row['id']):row for row in rows}
             self.findings, self.metrics, self.mtime = findings, metrics, signature
             self.relationships, self.graph_indexes = relationships, OrderedDict()
-            self.forecasts=forecasts.get('predictions',{})
 
     def incident(self, inc_id):
         self.refresh()
@@ -82,9 +77,6 @@ class Store:
                 old,_=self.incidents.popitem(last=False)
                 self.graph_indexes.pop(old,None)
             incident=self.incidents[inc_id]
-            prediction=self.forecasts.get(str(inc_id),{})
-            if prediction.get('fingerprint')==incident.get('fingerprint'):
-                return {**incident,'forecast':prediction['forecast']}
             return incident
 
 
@@ -160,39 +152,6 @@ def create_app(out_dir: Path, ai_service=None) -> FastAPI:
     @app.get('/graph/config')
     def graph_config():
         return {'backend':'neo4j' if neo else 'local','max_depth':max_depth,'default_depth':default_depth}
-
-    @app.get('/forecast/model')
-    def forecast_model():
-        store.refresh()
-        model=store._read('forecast-model.json',None)
-        if not model:
-            return {'status':'unavailable','reason':'No fitted model has been published for this run.'}
-        comparison=model.get('benchmark',{})
-        eligible=[int(key) for key,value in store.forecasts.items()
-                  if int(key) in store.by_id and value.get('fingerprint')==store.by_id[int(key)].get('fingerprint')
-                  and value.get('forecast',{}).get('status')=='estimated']
-        return {'status':'available','selected_model':model.get('selected_model',model.get('method')),
-                'training_until':model.get('training_until'),'training_incidents':model.get('training_incidents'),
-                'label_source':model.get('label_source','unspecified'),
-                'counts':comparison.get('counts',{}),'test':comparison.get('test',{}),
-                'warnings':comparison.get('warnings',[]),'eligible_incidents':len(eligible),
-                'example_incident_id':min(eligible) if eligible else None,
-                'download_url':'/forecast/model/download'}
-
-    @app.get('/forecast/model/download')
-    def download_forecast_model():
-        model=store._read('forecast-model.json',None)
-        if not model:raise HTTPException(404,'No fitted model has been published for this run')
-        return JSONResponse(model,headers={'Content-Disposition':'attachment; filename="forecast-model.json"'})
-
-    @app.get('/forecast/benchmark')
-    def forecast_benchmark():
-        return store._read('forecast-comparison.json',{'status':'unavailable','reason':'No chronological model comparison has been run for this dataset.'})
-
-    @app.get('/temporal/benchmark')
-    def temporal_benchmark():
-        return store._read('temporal-benchmark.json', {'status':'unavailable',
-            'reason':'No temporal interaction experiment has been run for this dataset.'})
 
     @app.get('/coverage')
     def coverage():

@@ -1,4 +1,4 @@
-"""Check the real-data demo's API, evidence links and temporal report without AI calls."""
+"""Check the real-data demo's API, evidence links and access hypotheses without AI calls."""
 import argparse
 import json
 import os
@@ -21,25 +21,20 @@ def main():
         rows=json.loads((output/'index.json').read_text(encoding='utf-8'))
         assert rows,'No demo incidents'
         assert listed,'API did not return incidents'
-        forecasts=[]
         for row in rows:
             # Validate every stored graph without repeatedly serializing all its
             # evidence/relationships through HTTP; API behavior is checked below.
             inc=json.loads((output/'incidents'/f"{row['id']}.json").read_text(encoding='utf-8'))
             ids={n['id'] for n in inc['graph']['nodes']}
             assert all(e['source'] in ids and e['target'] in ids for e in inc['graph']['edges'])
-            if inc.get('forecast',{}).get('sequences'):
-                forecasts.append(row['id'])
+            assert 'lookahead' in inc and 'reachable' in inc['lookahead']
+            assert 'forecast' not in inc
         incident=get(f"/incidents/{rows[0]['id']}").json()
         event=incident['timeline'][0]['event_ids'][0]
         get(f"/incidents/{incident['id']}/evidence/{event}")
         get('/')
-        temporal=get('/temporal/benchmark').json()
-        assert temporal['task']=='future_network_interaction_ranking' and temporal['attack_accuracy'] is None
-        assert forecasts,'No eligible future incident received a supported sequence'
-        result={'incidents':len(rows),'incidents_with_sequence_hypotheses':len(forecasts),
-                'example_sequence_incident_ids':forecasts[:5], 'graph_integrity':'passed for all incidents',
-                'api_evidence':'passed','temporal_report':'passed','live_sarvam':'not called'}
+        result={'incidents':len(rows),'graph_integrity':'passed for all incidents',
+                'api_evidence':'passed','reachability':'passed','live_sarvam':'not called'}
         (output/'demo-smoke.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
         print(json.dumps(result,indent=2))
 
