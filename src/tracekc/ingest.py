@@ -123,22 +123,40 @@ def find_inputs(input_dir: Path, patterns: list[str]) -> list[Path]:
     return sorted(files)
 
 
-def quarantine_utf8(reader, cache, key, maximum, base_offset=0, source_path=None):
-    """Stream malformed byte spans to a compact offset/hash ledger; leave source bytes intact."""
+def quarantine_utf8(reader, cache, key, maximum, base_offset=0, source_path=None, *, source_range=None):
+    """Stream rejected spans to a ledger; optionally clean a source range directly.
+
+    Range mode avoids copying a potentially huge rejected physical record to
+    temporary disk before inspecting it. Only accepted records are written.
+    """
     import base64
     import re
     clean=reader.with_suffix('.clean.log');diagnostics=cache/(key+'.quarantine.jsonl')
     prefix=re.compile(rb'(?:<\d+>)?date=\d{4}-\d\d-\d\d time=')
     fields=re.compile(rb'([A-Za-z0-9_]+)=("(?:[^"\\]|\\.)*"|[^ \r\n]+)')
     rejected=0;span=None
-    with reader.open('rb') as source,clean.open('wb') as output,diagnostics.open('w',encoding='utf-8') as ledger:
+    origin=source_path if source_range is not None else reader
+    start,length=source_range if source_range is not None else (0,reader.stat().st_size)
+    with origin.open('rb') as source,clean.open('wb') as output,diagnostics.open('w',encoding='utf-8') as ledger:
+        source.seek(start);remaining=length;next_progress=256*1024*1024
+        def fragment():
+            nonlocal remaining,next_progress
+            if not remaining:return b''
+            line=source.readline(min(maximum+1,remaining))
+            if not line:raise ValueError('Source was truncated during quarantine')
+            remaining-=len(line)
+            consumed=length-remaining
+            if source_range is not None and consumed>=next_progress:
+                log.info('Quarantine scan %s: %s/%s source-range bytes',origin.name,consumed,length)
+                next_progress=consumed+256*1024*1024
+            return line
         def flush():
             nonlocal span
             if span:
                 span['sha256']=span.pop('_digest').hexdigest()
                 ledger.write(json.dumps(span)+'\n');span=None
         while True:
-            offset=source.tell();line=source.readline(maximum+1)
+            offset=source.tell()-start;line=fragment()
             if not line:break
             reason=None
             if len(line)>maximum:reason='record_exceeds_maximum_object_size'
@@ -158,7 +176,7 @@ def quarantine_utf8(reader, cache, key, maximum, base_offset=0, source_path=None
                 while True:
                     span['_digest'].update(line);span['bytes']+=len(line)
                     if line.endswith(b'\n') or not line:break
-                    line=source.readline(maximum+1)
+                    line=fragment()
                 span['rejected_physical_lines']+=1
             else:
                 flush();output.write(line)
@@ -191,12 +209,15 @@ def _ingest_chunks(con, source, fmt, settings, cache, work, reader_signature, ti
     native_format=settings.get('native_format','csv')
     codec=parquet_codec(settings)
     before=source.stat()
+    quarantine_oversized=fmt=='fortigate' and settings.get('quarantine_invalid_utf8',True)
     immutable_signature=reader_signature+f':{before.st_size}:{before.st_mtime_ns}'
     parsed=0
     while True:
         with read_timing(timings, 'segment_copy_and_checkpoint_seconds'):
             plan=prepare(source,cache,work,immutable_signature,int(settings['maximum_object_size']),
-                         chunk_bytes=int(settings['chunk_bytes']),allow_final=True,copy_segment=not direct_native)
+                         chunk_bytes=int(settings['chunk_bytes']),allow_final=True,
+                         copy_segment=not (direct_native or quarantine_oversized),
+                         allow_oversized=quarantine_oversized)
         if plan['reader'] is None:
             return plan['prior'],parsed,plan['prior_rejected'],plan['rejection_files']
         shard=cache/(plan['key']+'.parquet');temporary=shard.with_suffix('.tmp.parquet')
@@ -205,6 +226,10 @@ def _ingest_chunks(con, source, fmt, settings, cache, work, reader_signature, ti
         quarantined = False
         def prepare_raw():
             nonlocal token_reader
+            if quarantined and reader.stat().st_size==0:
+                columns=', '.join(f'NULL::{dtype} AS \"{name}\"' for name,dtype in ECS_COLUMNS.items())
+                run(con,"CREATE OR REPLACE VIEW raw AS SELECT "+columns+", NULL::VARCHAR AS filename WHERE FALSE")
+                return
             if fmt=='fortigate':
                 from tracekc.fortigate import raw_view
                 if settings.get('native_fortigate', True):
@@ -223,14 +248,25 @@ def _ingest_chunks(con, source, fmt, settings, cache, work, reader_signature, ti
         normalize=NORMALIZE_SQL.replace('filename AS src_file',f'{lit(source)} AS src_file').replace('filename, "@timestamp"',f'{lit(source)}, "@timestamp"')
         statement=f'COPY ({normalize}) TO {lit(temporary)} (FORMAT parquet, COMPRESSION {codec}, ROW_GROUP_SIZE 122880)'
         try:
+            if quarantine_oversized and plan['bytes']>int(settings['chunk_bytes']):
+                # Extended physical records can span gigabytes. Validate directly
+                # from the original range, never first copy the whole bad span.
+                with read_timing(timings, 'quarantine_seconds'):
+                    count,files=quarantine_utf8(reader,cache,plan['key'],int(settings['maximum_object_size']),
+                        plan['offset']-plan['bytes'],source,
+                        source_range=(plan['offset']-plan['bytes'],plan['bytes']))
+                quarantined=True;plan['new_rejected']=count;plan['rejection_files'].extend(files)
+                log.warning('Quarantined %s oversized/malformed physical records in %s; source offsets/hashes recorded and original file unchanged',count,source.name)
+            if quarantine_oversized and not direct_native and not quarantined:
+                materialize(plan)
             prepare_raw()
             if direct_native:
                 prefetch.ahead(source,cache,int(settings['maximum_object_size']),plan['offset'],before.st_size,
-                               int(settings['chunk_bytes']),native_format)
+                               int(settings['chunk_bytes']),native_format,allow_oversized=quarantine_oversized)
             with read_timing(timings, 'parse_normalize_write_seconds'):
                 run(con,statement)
         except Exception as exc:
-            if fmt!='fortigate' or not settings.get('quarantine_invalid_utf8',True) or not any(marker in str(exc) for marker in ('Invalid unicode','Map keys must be unique','CSV Error')):
+            if quarantined or fmt!='fortigate' or not settings.get('quarantine_invalid_utf8',True) or not any(marker in str(exc) for marker in ('Invalid unicode','Map keys must be unique','CSV Error')):
                 raise
             with read_timing(timings, 'quarantine_seconds'):
                 if not reader.exists():materialize(plan)

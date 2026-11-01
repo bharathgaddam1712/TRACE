@@ -104,10 +104,15 @@ class TokenPrefetch:
             return future.result()
         return tokenize(source,cache,maximum,**kwargs)
 
-    def ahead(self,source,cache,maximum,start,size,chunk_bytes,format):
+    def ahead(self,source,cache,maximum,start,size,chunk_bytes,format,*,allow_oversized=False):
         if self.pool is None or self.pending is not None or start>=size:return
         from tracekc.read_cache import chunk_end
-        end=chunk_end(source,start,size,maximum,chunk_bytes,True)
+        try:
+            end=chunk_end(source,start,size,maximum,chunk_bytes,True)
+        except ValueError as exc:
+            if allow_oversized and 'unterminated record exceeds maximum_object_size' in str(exc):
+                return  # Foreground quarantine owns oversized ranges, not speculative lexing.
+            raise
         if end<=start:return
         target=cache/f'prefetch-{start}-{end}.tokens.{format}'
         future=self.pool.submit(tokenize,source,cache,maximum,offset=start,length=end-start,

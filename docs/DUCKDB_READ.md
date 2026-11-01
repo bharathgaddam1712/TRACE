@@ -21,10 +21,36 @@ Sources: [workload tuning](https://duckdb.org/docs/2.0/guides/performance/how_to
 
 ## What TRACE uses
 
+### Oversized or zero-filled FortiGate spans
+
+Older readers stopped while locating a chunk boundary if no newline appeared
+within `maximum_object_size`. Closed FortiGate inputs with quarantine enabled
+now locate the end of that physical record with a bounded scan. The parser limit
+still applies; this is not acceptance of arbitrary oversized events. The raw
+source is unchanged, rejected spans retain exact offsets/bytes/SHA-256 and
+prefix-looking continuations do not become new events. All-invalid inputs still
+fail after recording diagnostics. Quarantine range scans log progress every
+approximately 256 MiB. A source snapshot must remain unchanged during reading.
+
+Because reader code contributes to cache identity, upgrading invalidates the
+earlier checkpoints. Use a fresh output directory for a clear recovery run.
+An old incomplete output is not a completed demo. Zero-filled source bytes are
+an input-quality problem: the reader cannot reconstruct missing log content.
+Verify the downloaded file against the original source when possible.
+
+### Normal processing
+
 - Native DuckDB parsing for explicitly typed ECS JSON and FortiGate key/value
   records; bounded streaming adapters for CSV and timestamped syslog.
 - Closed, large uncompressed files: 256 MiB newline-aligned resumable chunks and
-  compressed Parquet shards. Full-file source size/mtime changes invalidate snapshots.
+  compressed Parquet shards. This is a target chunk size, not an absolute cap:
+  a closed FortiGate reader with quarantine enabled may scan forward in 1 MiB
+  blocks to finish an oversized physical record. The record-size limit is not
+  raised; quarantine streams rejected ranges directly from the original source
+  into an offset/hash ledger, writing only accepted records to temporary disk.
+  Continuations are never reframed as independent events. ECS and append-only
+  boundary policies remain strict. Full-file source size/mtime or reader-code
+  changes invalidate snapshots, so upgrading this reader requires a fresh read.
 - Deduplication and normalization in SQL; insertion order disabled to reduce
   unnecessary buffering. Events have explicit ordering where chronology matters.
 - Conservative automatic thread count (up to four), configurable DuckDB memory

@@ -236,6 +236,7 @@ For real reviewed labels, use `tracekc eval --out OUT --gt ground_truth.json --s
 | Port already in use | Stop your earlier demo or choose unused ports. For Compose set `TRACE_WEB_PORT` and `TRACE_API_PORT`; for native use launcher flags. |
 | API unreachable / HTTP 502 | Confirm the API is running and its output path matches the intended run. Native frontend defaults to `http://127.0.0.1:8000`. |
 | No completed results | Run the pipeline first; inspect `progress.json` and processing logs for failures. |
+| Oversized / unterminated FortiGate record | Update the reader. Closed-file quarantine can stream oversized spans without raising the parser limit; inspect rejected-byte accounting. See [reader details](docs/DUCKDB_READ.md). |
 | No reachable assets | Check whether the logs contain supported account/host access evidence before the incident cutoff. Empty results can be correct. |
 | Memory or disk pressure | Reduce concurrency, inspect free disk/RAM and use SSD spill. Do not assume raising DuckDB's limit improves latency. |
 | Assistant unavailable | Configure a valid server-side key/model and review provider access and local usage budgets. |
